@@ -7,9 +7,10 @@ interface ArtDisplayProps {
   irisUrl: string;
   style: string;
   onReset: () => void;
+  onGenerateHD?: () => void;
 }
 
-export default function ArtDisplay({ artUrl, irisUrl, style, onReset }: ArtDisplayProps) {
+export default function ArtDisplay({ artUrl, irisUrl, style, onReset, onGenerateHD }: ArtDisplayProps) {
   const [downloading, setDownloading] = useState(false);
 
   const handleDownload = async () => {
@@ -58,13 +59,26 @@ export default function ArtDisplay({ artUrl, irisUrl, style, onReset }: ArtDispl
         </div>
       </div>
 
-      {/* Free tier watermark notice */}
-      <div className="glass-card rounded-xl p-4 max-w-md mx-auto text-center">
-        <p className="text-gray-400 text-sm">
-          📌 This is a <span className="text-iris-400">free preview</span>. Upgrade to Pro for 
-          high-res downloads without watermark.
-        </p>
-      </div>
+      {/* HD upgrade card */}
+      {onGenerateHD && (
+        <div className="glass-card rounded-xl p-5 max-w-lg mx-auto">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-semibold text-iris-400">✨ Preview generated</p>
+              <p className="text-gray-400 text-xs mt-1">
+                Upgrade to HD for the full 1024×1024 render with your actual iris colors.
+                Takes ~2 min.
+              </p>
+            </div>
+            <button
+              onClick={onGenerateHD}
+              className="ml-4 px-5 py-2.5 rounded-full animated-gradient text-white text-sm font-semibold hover:scale-105 transition-transform whitespace-nowrap"
+            >
+              ⚡ Make HD
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Actions */}
       <div className="flex flex-col sm:flex-row gap-4 justify-center">

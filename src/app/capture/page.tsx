@@ -25,7 +25,8 @@ export default function CapturePage() {
     setStep('generating');
 
     try {
-      const response = await fetch('/api/generate', {
+      // Tier 1: Fast cheap preview (~$0.005)
+      const response = await fetch('/api/generate?tier=preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ irisImage, style }),
@@ -41,9 +42,35 @@ export default function CapturePage() {
       setStep('result');
     } catch (error: any) {
       console.error('Generation error:', error);
-      // Show error to user and go back to style selection
       alert(error.message || 'Art generation failed. Please try again.');
       setStep('style');
+    }
+  };
+
+  const handleGenerateHD = async () => {
+    if (!irisImage || !selectedStyle) return;
+    setStep('generating');
+
+    try {
+      // Tier 2: Full quality with iris reference
+      const response = await fetch('/api/generate?tier=final', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ irisImage, style: selectedStyle }),
+      });
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ error: 'HD generation failed' }));
+        throw new Error(err.error || 'HD generation failed');
+      }
+
+      const result = await response.json();
+      setGeneratedArt(result.imageUrl);
+      setStep('result');
+    } catch (error: any) {
+      console.error('HD generation error:', error);
+      alert(error.message || 'HD generation failed. Your preview is still available.');
+      setStep('result');
     }
   };
 
@@ -160,6 +187,7 @@ export default function CapturePage() {
             irisUrl={irisImage!}
             style={selectedStyle!}
             onReset={handleReset}
+            onGenerateHD={handleGenerateHD}
           />
         )}
       </div>

@@ -3,6 +3,15 @@ import { NextRequest, NextResponse } from 'next/server';
 export const runtime = 'nodejs';
 export const maxDuration = 300; // 5 min — gpt-image-2 can take 2-3 min
 
+/**
+ * Tiered image generation pipeline:
+ *   Tier 1 (fast/cheap):  gpt-image-1-mini — ~$0.005/image, instant preview
+ *   Tier 2 (best):        gpt-image-2 with iris reference — ~$0.10-2.00/image, final quality
+ *
+ * The frontend can request either tier via `?tier=preview` or `?tier=final` (default: preview).
+ * This keeps costs down — users see a $0.005 preview first, then only pay for the $2 final if they want it.
+ */
+
 const STYLE_PROMPTS: Record<string, string> = {
   macro:
     `Create a flawless professional macro photography portrait of a human iris on a pure deep black background. ` +
@@ -48,6 +57,9 @@ const STYLE_PROMPTS: Record<string, string> = {
     `Dramatic lighting, photorealistic elements. Commercial-quality for large print. No text.`,
 };
 
+// Shorter prompts for the cheap preview model
+const PREVIEW_SUFFIX = ` Quick sketch version, lower detail, smaller image. No text.`;
+
 function buildMultipart(imageBuffer: Buffer, fields: Record<string, string>): { body: Buffer; boundary: string } {
   const boundary = '----IC' + Date.now() + Math.random().toString(36).slice(2);
   const parts: Buffer[] = [];
@@ -65,6 +77,8 @@ function buildMultipart(imageBuffer: Buffer, fields: Record<string, string>): { 
 }
 
 export async function POST(request: NextRequest) {
+  const tier = request.nextUrl.searchParams.get('tier') || 'preview';
+
   try {
     const body = await request.json();
     const { irisImage, style } = body as { irisImage?: string; style?: string };
@@ -78,7 +92,6 @@ export async function POST(request: NextRequest) {
       console.error('OPENAI_API_KEY is not set in environment');
       return NextResponse.json({ error: 'Server not configured' }, { status: 500 });
     }
-    console.log('API key found, length:', apiKey.length, 'prefix:', apiKey.substring(0, 7));
 
     const stylePrompt = STYLE_PROMPTS[style] || STYLE_PROMPTS.macro;
     const rawBase64 = irisImage.includes(',') ? irisImage.split(',')[1] : irisImage;
@@ -86,52 +99,93 @@ export async function POST(request: NextRequest) {
 
     let imageUrl: string | null = null;
 
-    // Primary: Image edit — sends the actual iris photo to OpenAI
-    try {
-      console.log('Starting image edit request...');
-      const { body: multipartBody, boundary } = buildMultipart(imageBuffer, {
-        prompt: stylePrompt,
-        model: 'gpt-image-2',
-        n: '1',
-        size: '1024x1024',
-        quality: 'low',
-      });
+    if (tier === 'final') {
+      // ─── TIER 2: gpt-image-2 with iris reference (expensive, best quality) ───
+      console.log('FINAL tier: gpt-image-2 with iris edit');
 
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 240000); // 4 min timeout
+      // Attempt 1: Image edit — sends actual iris photo
+      try {
+        const { body: multipartBody, boundary } = buildMultipart(imageBuffer, {
+          prompt: stylePrompt,
+          model: 'gpt-image-2',
+          n: '1',
+          size: '1024x1024',
+          quality: 'low',
+        });
 
-      const resp = await fetch('https://api.openai.com/v1/images/edits', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': `multipart/form-data; boundary=${boundary}`,
-        },
-        body: multipartBody as any,
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-      console.log('Edit response status:', resp.status);
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 240000);
 
-      if (resp.ok) {
-        const data = await resp.json();
-        if (data.data?.[0]?.url) {
-          imageUrl = data.data[0].url;
-        } else if (data.data?.[0]?.b64_json) {
-          imageUrl = `data:image/png;base64,${data.data[0].b64_json}`;
+        const resp = await fetch('https://api.openai.com/v1/images/edits', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          },
+          body: multipartBody as any,
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+        console.log('gpt-image-2 edit response:', resp.status);
+
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data.data?.[0]?.b64_json) {
+            imageUrl = `data:image/png;base64,${data.data[0].b64_json}`;
+          } else if (data.data?.[0]?.url) {
+            imageUrl = data.data[0].url;
+          }
+        } else {
+          const err = await resp.json().catch(() => null);
+          console.error('gpt-image-2 edit failed:', resp.status, err?.error?.message || 'unknown');
         }
-      } else {
-        const err = await resp.json().catch(() => null);
-        console.error('Edit failed:', resp.status, err?.error?.message || 'unknown');
+      } catch (e: any) {
+        console.error('gpt-image-2 edit exception:', e.message);
       }
-    } catch (e: any) {
-      console.error('Edit exception:', e.message);
-    }
 
-    // Fallback: Text-to-image generation (faster, no iris reference)
-    if (!imageUrl) {
-      console.log('Falling back to text-to-image generation');
+      // Fallback: text-to-image with gpt-image-2 (no iris ref, still good)
+      if (!imageUrl) {
+        console.log('Falling back to gpt-image-2 text-to-image');
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 240000);
+
+        const resp = await fetch('https://api.openai.com/v1/images/generations', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model: 'gpt-image-2',
+            prompt: stylePrompt,
+            n: 1,
+            size: '1024x1024',
+            quality: 'low',
+          }),
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+        console.log('gpt-image-2 generation response:', resp.status);
+
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({ error: { message: resp.statusText } }));
+          throw new Error(err.error?.message || 'Generation failed');
+        }
+
+        const data = await resp.json();
+        if (data.data?.[0]?.b64_json) {
+          imageUrl = `data:image/png;base64,${data.data[0].b64_json}`;
+        } else if (data.data?.[0]?.url) {
+          imageUrl = data.data[0].url;
+        }
+      }
+
+    } else {
+      // ─── TIER 1: gpt-image-1-mini text-to-image (cheap, fast preview) ───
+      console.log('PREVIEW tier: gpt-image-1-mini text-to-image');
+
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 240000);
+      const timer = setTimeout(() => controller.abort(), 60000); // 60s is plenty for mini
 
       const resp = await fetch('https://api.openai.com/v1/images/generations', {
         method: 'POST',
@@ -140,47 +194,78 @@ export async function POST(request: NextRequest) {
           'Authorization': `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-          model: 'gpt-image-2',
-          prompt: stylePrompt,
+          model: 'gpt-image-1-mini',
+          prompt: stylePrompt + PREVIEW_SUFFIX,
           n: 1,
-          size: '1024x1024',
+          size: '512x512',
           quality: 'low',
         }),
         signal: controller.signal,
       });
       clearTimeout(timer);
-      console.log('Generation response status:', resp.status);
+      console.log('gpt-image-1-mini response:', resp.status);
 
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({ error: { message: resp.statusText } }));
-        throw new Error(err.error?.message || 'Generation failed');
-      }
+        console.error('Preview failed:', resp.status, err?.error?.message || 'unknown');
 
-      const data = await resp.json();
-      if (data.data?.[0]?.url) {
-        imageUrl = data.data[0].url;
-      } else if (data.data?.[0]?.b64_json) {
-        imageUrl = `data:image/png;base64,${data.data[0].b64_json}`;
+        // If mini fails, try dall-e-3 as fallback (still cheap)
+        console.log('Falling back to dall-e-3');
+        const controller2 = new AbortController();
+        const timer2 = setTimeout(() => controller2.abort(), 60000);
+
+        const resp2 = await fetch('https://api.openai.com/v1/images/generations', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model: 'dall-e-3',
+            prompt: stylePrompt,
+            n: 1,
+            size: '1024x1024',
+            quality: 'standard',
+          }),
+          signal: controller2.signal,
+        });
+        clearTimeout(timer2);
+        console.log('dall-e-3 response:', resp2.status);
+
+        if (resp2.ok) {
+          const data = await resp2.json();
+          if (data.data?.[0]?.url) {
+            imageUrl = data.data[0].url;
+          } else if (data.data?.[0]?.b64_json) {
+            imageUrl = `data:image/png;base64,${data.data[0].b64_json}`;
+          }
+        } else {
+          const err2 = await resp2.json().catch(() => ({ error: { message: resp2.statusText } }));
+          throw new Error(err2.error?.message || err?.error?.message || 'Preview generation failed');
+        }
+      } else {
+        const data = await resp.json();
+        if (data.data?.[0]?.b64_json) {
+          imageUrl = `data:image/png;base64,${data.data[0].b64_json}`;
+        } else if (data.data?.[0]?.url) {
+          imageUrl = data.data[0].url;
+        }
       }
     }
 
     if (!imageUrl) throw new Error('No image returned');
 
-    // If it's base64, we need to return it differently to avoid Vercel's 4.5MB response limit
-    // For base64, convert to a data URL the client can use directly
-    // For OpenAI URLs, proxy through our image-proxy to avoid CORS issues
     let clientUrl: string;
     if (imageUrl.startsWith('data:')) {
-      // Base64 — too large for JSON response on Vercel hobby. 
-      // Store temporarily and return a fetchable URL
-      // For now, just send it — Railway won't have this limit
       clientUrl = imageUrl;
     } else {
-      // OpenAI URL — proxy it
       clientUrl = `/api/image-proxy?url=${encodeURIComponent(imageUrl)}`;
     }
 
-    return NextResponse.json({ imageUrl: clientUrl });
+    return NextResponse.json({
+      imageUrl: clientUrl,
+      tier,
+    });
   } catch (error: any) {
     const message = error?.message || 'Generation failed';
     console.error('Route error:', message);
