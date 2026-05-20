@@ -93,7 +93,7 @@ export async function POST(request: NextRequest) {
         model: 'gpt-image-2',
         n: '1',
         size: '1024x1024',
-        quality: 'high',
+        quality: 'low',
       });
 
       const controller = new AbortController();
@@ -144,7 +144,7 @@ export async function POST(request: NextRequest) {
           prompt: stylePrompt,
           n: 1,
           size: '1024x1024',
-          quality: 'high',
+          quality: 'low',
         }),
         signal: controller.signal,
       });
