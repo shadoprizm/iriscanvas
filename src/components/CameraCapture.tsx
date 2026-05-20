@@ -25,10 +25,22 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
       });
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
+        // iOS Safari requires explicit play() after setting srcObject
+        try {
+          await videoRef.current.play();
+        } catch (playErr) {
+          // Some browsers play automatically, ignore play() rejection
+          console.log('Video play() note:', playErr);
+        }
         setStreaming(true);
       }
-    } catch (err) {
-      setError('Camera access denied or unavailable. Try uploading a photo instead.');
+    } catch (err: any) {
+      const msg = err?.name === 'NotAllowedError'
+        ? 'Camera permission denied. Please allow camera access in your browser settings and try again.'
+        : err?.name === 'NotFoundError'
+        ? 'No camera found on this device. Try uploading a photo instead.'
+        : 'Camera access denied or unavailable. Try uploading a photo instead.';
+      setError(msg);
     }
   }, [facingMode]);
 
@@ -99,7 +111,9 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
               autoPlay
               playsInline
               muted
+              controls={false}
               className="w-full h-full object-cover"
+              style={{ transform: facingMode === 'user' ? 'scaleX(-1)' : 'none' }}
             />
             {/* Guide overlay */}
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
