@@ -91,7 +91,20 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
             background: '#000',
           }}
         />
-        <div style={{ marginTop: '16px', display: 'flex', gap: '12px', justifyContent: 'center' }}>
+        <div style={{ marginTop: '16px', display: 'flex', gap: '12px', justifyContent: 'center', alignItems: 'center' }}>
+          <button
+            onClick={closeCamera}
+            style={{
+              padding: '12px 20px',
+              borderRadius: '24px',
+              background: 'transparent',
+              color: '#999',
+              fontSize: '14px',
+              border: '1px solid rgba(255,255,255,0.2)',
+            }}
+          >
+            ✕
+          </button>
           <button
             onClick={takePhoto}
             style={{
@@ -108,7 +121,26 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
             📸 Capture
           </button>
           <button
-            onClick={closeCamera}
+            onClick={async () => {
+              const v = videoRef.current;
+              if (v?.srcObject) {
+                (v.srcObject as MediaStream).getTracks().forEach(t => t.stop());
+                v.srcObject = null;
+              }
+              setCameraActive(false);
+              setTimeout(async () => {
+                try {
+                  const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+                    audio: false,
+                  });
+                  if (v) {
+                    v.srcObject = stream;
+                    v.onloadedmetadata = () => { v.play().catch(() => {}); setCameraActive(true); };
+                  }
+                } catch (e) { /* fallback: just reopen back camera */ openCamera(); }
+              }, 300);
+            }}
             style={{
               padding: '12px 20px',
               borderRadius: '24px',
@@ -118,7 +150,7 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
               border: '1px solid rgba(255,255,255,0.2)',
             }}
           >
-            Cancel
+            🔄 Flip
           </button>
         </div>
       </div>
