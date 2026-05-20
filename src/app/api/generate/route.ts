@@ -89,7 +89,6 @@ async function tryImageEdit(imageBuffer: Buffer, prompt: string, apiKey: string)
     n: '1',
     size: '1024x1024',
     quality: 'high',
-    response_format: 'b64_json',
   });
 
   const boundary = body.toString('ascii').match(/----IrisCanvas\d+/)?.[0] || '----IrisCanvas';
@@ -135,7 +134,6 @@ async function tryGeneration(prompt: string, apiKey: string): Promise<string> {
       n: 1,
       size: '1024x1024',
       quality: 'high',
-      response_format: 'b64_json',
     }),
   });
 
