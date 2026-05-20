@@ -64,7 +64,8 @@ function buildMultipart(imageBuffer: Buffer, fields: Record<string, string>): { 
   }
   parts.push(Buffer.from(`--${boundary}--\r\n`));
 
-  return { body: new Uint8Array(Buffer.concat(parts)), boundary };
+  const buf = Buffer.concat(parts);
+  return { body: Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength), boundary };
 }
 
 /**
