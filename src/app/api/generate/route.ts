@@ -187,10 +187,11 @@ export async function POST(request: NextRequest) {
   const tier = request.nextUrl.searchParams.get('tier') || 'preview';
   const isFinal = tier === 'final';
 
-  // Model config per tier
-  const MODEL = isFinal ? 'gpt-image-2' : 'gpt-image-1-mini';
-  const SIZE = isFinal ? '1024x1024' : '512x512';
-  const QUALITY = isFinal ? 'low' : 'low';
+  // Same model for both tiers — quality controls cost
+  const MODEL = 'gpt-image-2';
+  const SIZE = '1024x1024';
+  const ENHANCE_QUALITY = 'low';  // Always low for enhance stage
+  const ART_QUALITY = isFinal ? 'high' : 'low';  // Low for preview, high for final
   const TIMEOUT = isFinal ? 240000 : 60000;
 
   try {
@@ -219,7 +220,7 @@ export async function POST(request: NextRequest) {
     // ═══════════════════════════════════════════
     console.log(`[${tier}] Stage 1: Enhancing iris with ${MODEL}...`);
 
-    const enhancedResult = await imageEdit(apiKey, irisBuffer, ENHANCE_PROMPT, MODEL, SIZE, QUALITY, TIMEOUT);
+    const enhancedResult = await imageEdit(apiKey, irisBuffer, ENHANCE_PROMPT, MODEL, SIZE, ENHANCE_QUALITY, TIMEOUT);
 
     if (enhancedResult) {
       console.log(`[${tier}] Stage 1 complete: iris enhanced`);
@@ -237,18 +238,18 @@ export async function POST(request: NextRequest) {
 
     // Try image edit with enhanced iris first
     if (enhancedBuffer) {
-      imageUrl = await imageEdit(apiKey, enhancedBuffer, stylePrompt, MODEL, SIZE, QUALITY, TIMEOUT);
+      imageUrl = await imageEdit(apiKey, enhancedBuffer, stylePrompt, MODEL, SIZE, ART_QUALITY, TIMEOUT);
     }
 
     // Fallback: text-to-image (no iris reference, but still generates art)
     if (!imageUrl) {
       console.log(`[${tier}] Stage 2 edit failed, trying text-to-image...`);
-      imageUrl = await textToImage(apiKey, stylePrompt, MODEL, SIZE, QUALITY, TIMEOUT);
+      imageUrl = await textToImage(apiKey, stylePrompt, MODEL, SIZE, ART_QUALITY, TIMEOUT);
     }
 
     // Last resort for preview: try dall-e-3
     if (!imageUrl && !isFinal) {
-      console.log(`[${tier}] gpt-image-1-mini failed, trying dall-e-3...`);
+      console.log(`[${tier}] All gpt-image-2 attempts failed, trying dall-e-3...`);
       imageUrl = await textToImage(apiKey, stylePrompt, 'dall-e-3', '1024x1024', 'standard', 60000);
     }
 
