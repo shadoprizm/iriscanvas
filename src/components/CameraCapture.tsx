@@ -125,10 +125,11 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
         return;
       }
 
-      // Analyze center region of the frame
-      const size = 80;
+      // Analyze region matching the overlay position (upper quarter of frame)
+      const size = 120;
       const cx = Math.floor(v.videoWidth / 2 - size / 2);
-      const cy = Math.floor(v.videoHeight / 2 - size / 2);
+      // Sample from upper area (25% mark) to match the overlay
+      const cy = Math.floor(v.videoHeight * 0.25 - size / 2);
 
       c.width = size;
       c.height = size;
@@ -138,52 +139,64 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
       const imageData = ctx.getImageData(0, 0, size, size);
       const pixels = imageData.data;
 
-      // Check for iris-like characteristics:
-      // 1. Dark pupil center (low brightness in middle)
-      // 2. Colored iris ring around it (moderate saturation)
-      // 3. Contrast between center and edges
-      const centerStart = (size / 2 - 10) * size + (size / 2 - 10);
-      const centerPixels = 20 * 20;
+      // Analyze center region for dark pupil
+      const innerSize = 30;
+      const innerStart = (size / 2 - innerSize / 2) * size + (size / 2 - innerSize / 2);
       let centerBrightness = 0;
-      for (let i = 0; i < centerPixels; i++) {
-        const idx = (centerStart + (Math.floor(i / 20) * size) + (i % 20)) * 4;
-        centerBrightness += (pixels[idx] + pixels[idx + 1] + pixels[idx + 2]) / 3;
+      let centerPixels = 0;
+      for (let y = 0; y < innerSize; y++) {
+        for (let x = 0; x < innerSize; x++) {
+          const idx = (innerStart + y * size + x) * 4;
+          centerBrightness += (pixels[idx] + pixels[idx + 1] + pixels[idx + 2]) / 3;
+          centerPixels++;
+        }
       }
       centerBrightness /= centerPixels;
 
-      // Edge ring (around the center)
-      let edgeBrightness = 0;
-      let edgeCount = 0;
-      for (let y = 0; y < size; y += 4) {
-        for (let x = 0; x < size; x += 4) {
+      // Outer ring for iris color
+      let outerBrightness = 0;
+      let outerSaturation = 0;
+      let outerCount = 0;
+      for (let y = 0; y < size; y += 3) {
+        for (let x = 0; x < size; x += 3) {
           const dist = Math.sqrt((x - size/2) ** 2 + (y - size/2) ** 2);
-          if (dist > 25 && dist < 35) {
+          if (dist > 35 && dist < 50) {
             const idx = (y * size + x) * 4;
-            edgeBrightness += (pixels[idx] + pixels[idx + 1] + pixels[idx + 2]) / 3;
-            edgeCount++;
+            const r = pixels[idx], g = pixels[idx + 1], b = pixels[idx + 2];
+            outerBrightness += (r + g + b) / 3;
+            const max = Math.max(r, g, b), min = Math.min(r, g, b);
+            outerSaturation += (max === 0 ? 0 : (max - min) / max);
+            outerCount++;
           }
         }
       }
-      edgeBrightness /= (edgeCount || 1);
+      outerBrightness /= (outerCount || 1);
+      outerSaturation /= (outerCount || 1);
 
-      const contrast = Math.abs(edgeBrightness - centerBrightness);
+      // Full region brightness (lighting check)
+      let totalBrightness = 0;
+      for (let i = 0; i < pixels.length; i += 16) {
+        totalBrightness += (pixels[i] + pixels[i+1] + pixels[i+2]) / 3;
+      }
+      totalBrightness /= (pixels.length / 16);
 
-      // Good iris detection:
-      // - Center is dark (pupil < 80)
-      // - Contrast between iris ring and pupil is high (> 30)
-      // - Not too dark overall (lighting is ok)
-      const hasPupil = centerBrightness < 90;
-      const hasContrast = contrast > 25;
-      const hasLight = edgeBrightness > 40;
+      const contrast = Math.abs(outerBrightness - centerBrightness);
+
+      // Relaxed detection - prefer false positives over misses
+      const hasPupil = centerBrightness < 120;      // generous threshold
+      const hasContrast = contrast > 15;            // lower bar
+      const hasLight = totalBrightness > 30;        // very low floor
+      const hasColor = outerSaturation > 0.05;      // some iris color
 
       if (hasPupil && hasContrast && hasLight) {
         setAutoStatus('🎯 Iris detected! Capturing...');
-        // Brief delay to stabilize, then capture
-        setTimeout(() => takePhoto(), 400);
-      } else if (hasPupil) {
-        setAutoStatus('👁️ Almost there... move closer');
-      } else if (centerBrightness < 150) {
-        setAutoStatus('🔍 Center your eye in the circle');
+        setTimeout(() => takePhoto(), 300);
+      } else if (hasPupil && hasLight) {
+        setAutoStatus('👁️ Almost there... hold steady');
+      } else if (totalBrightness < 25) {
+        setAutoStatus('💡 Need more light');
+      } else if (centerBrightness < 180) {
+        setAutoStatus('🔍 Move closer to your eye');
       } else {
         setAutoStatus('📷 Point camera at your eye');
       }
@@ -221,29 +234,28 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
             }}
           />
 
-          {/* Iris target overlay */}
+          {/* Iris target overlay - positioned higher on mobile to match camera */}
           {autoMode && (
             <div style={{
               position: 'absolute',
-              top: '50%',
+              top: '25%',
               left: '50%',
               transform: 'translate(-50%, -50%)',
-              width: '120px',
-              height: '120px',
+              width: '140px',
+              height: '140px',
               borderRadius: '50%',
-              border: '3px solid rgba(106, 27, 255, 0.7)',
-              boxShadow: '0 0 30px rgba(106, 27, 255, 0.4), inset 0 0 20px rgba(106, 27, 255, 0.1)',
+              border: '3px dashed rgba(106, 27, 255, 0.8)',
+              boxShadow: '0 0 30px rgba(106, 27, 255, 0.3)',
               pointerEvents: 'none',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
             }}>
-              {/* Inner target ring */}
               <div style={{
-                width: '50px',
-                height: '50px',
+                width: '60px',
+                height: '60px',
                 borderRadius: '50%',
-                border: '2px solid rgba(255, 106, 179, 0.5)',
+                border: '2px solid rgba(255, 106, 179, 0.6)',
               }} />
             </div>
           )}
