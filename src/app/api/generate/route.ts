@@ -48,10 +48,7 @@ const STYLE_PROMPTS: Record<string, string> = {
     `Dramatic lighting, photorealistic elements. Commercial-quality for large print. No text.`,
 };
 
-/**
- * Build multipart body for OpenAI /images/edits
- */
-function buildMultipart(imageBuffer: Buffer, fields: Record<string, string>): { body: Uint8Array; boundary: string } {
+function buildMultipart(imageBuffer: Buffer, fields: Record<string, string>): { body: Buffer; boundary: string } {
   const boundary = '----IC' + Date.now() + Math.random().toString(36).slice(2);
   const parts: Buffer[] = [];
 
@@ -64,22 +61,7 @@ function buildMultipart(imageBuffer: Buffer, fields: Record<string, string>): { 
   }
   parts.push(Buffer.from(`--${boundary}--\r\n`));
 
-  const buf = Buffer.concat(parts);
-  return { body: Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength), boundary };
-}
-
-/**
- * Call OpenAI with timeout and retry
- */
-async function callOpenAI(url: string, options: RequestInit, timeoutMs = 50000): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const resp = await fetch(url, { ...options, signal: controller.signal });
-    return resp;
-  } finally {
-    clearTimeout(timer);
-  }
+  return { body: Buffer.concat(parts), boundary };
 }
 
 export async function POST(request: NextRequest) {
@@ -100,11 +82,9 @@ export async function POST(request: NextRequest) {
     const rawBase64 = irisImage.includes(',') ? irisImage.split(',')[1] : irisImage;
     const imageBuffer = Buffer.from(rawBase64, 'base64');
 
-    // Strategy: Try image edit (uses the actual photo). If that fails, fall back to generation (text-only).
     let imageUrl: string | null = null;
-    let method = 'edit';
 
-    // ATTEMPT 1: Image edit with the actual photo
+    // ATTEMPT 1: Image edit (sends the actual photo to OpenAI)
     try {
       const { body: multipartBody, boundary } = buildMultipart(imageBuffer, {
         prompt: stylePrompt,
@@ -114,34 +94,44 @@ export async function POST(request: NextRequest) {
         quality: 'high',
       });
 
-      const resp = await callOpenAI('https://api.openai.com/v1/images/edits', {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 55000);
+
+      const resp = await fetch('https://api.openai.com/v1/images/edits', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${apiKey}`,
           'Content-Type': `multipart/form-data; boundary=${boundary}`,
         },
         body: multipartBody as any,
+        signal: controller.signal,
       });
+      clearTimeout(timer);
 
       if (resp.ok) {
         const data = await resp.json();
-        if (data.data?.[0]?.b64_json) {
-          imageUrl = `data:image/png;base64,${data.data[0].b64_json}`;
-        } else if (data.data?.[0]?.url) {
+        if (data.data?.[0]?.url) {
           imageUrl = data.data[0].url;
+        } else if (data.data?.[0]?.b64_json) {
+          // b64 too large for Vercel response — fetch the image and return as a proxy URL
+          const b64 = data.data[0].b64_json;
+          imageUrl = `data:image/png;base64,${b64}`;
         }
       } else {
         const err = await resp.json().catch(() => null);
-        console.error('Edit failed:', resp.status, err?.error?.message);
+        console.error('Edit failed:', resp.status, err?.error?.message || 'unknown');
       }
     } catch (e: any) {
       console.error('Edit exception:', e.message);
     }
 
-    // FALLBACK: Text-to-image generation (no input photo, but still gpt-image-2 high quality)
+    // FALLBACK: Text-to-image generation
     if (!imageUrl) {
-      method = 'generation';
-      const resp = await callOpenAI('https://api.openai.com/v1/images/generations', {
+      console.log('Falling back to text-to-image generation');
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 55000);
+
+      const resp = await fetch('https://api.openai.com/v1/images/generations', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -154,7 +144,9 @@ export async function POST(request: NextRequest) {
           size: '1024x1024',
           quality: 'high',
         }),
+        signal: controller.signal,
       });
+      clearTimeout(timer);
 
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({ error: { message: resp.statusText } }));
@@ -162,18 +154,30 @@ export async function POST(request: NextRequest) {
       }
 
       const data = await resp.json();
-      if (data.data?.[0]?.b64_json) {
-        imageUrl = `data:image/png;base64,${data.data[0].b64_json}`;
-      } else if (data.data?.[0]?.url) {
+      if (data.data?.[0]?.url) {
         imageUrl = data.data[0].url;
+      } else if (data.data?.[0]?.b64_json) {
+        imageUrl = `data:image/png;base64,${data.data[0].b64_json}`;
       }
     }
 
-    if (!imageUrl) {
-      throw new Error('No image returned');
+    if (!imageUrl) throw new Error('No image returned');
+
+    // If it's base64, we need to return it differently to avoid Vercel's 4.5MB response limit
+    // For base64, convert to a data URL the client can use directly
+    // For OpenAI URLs, proxy through our image-proxy to avoid CORS issues
+    let clientUrl: string;
+    if (imageUrl.startsWith('data:')) {
+      // Base64 — too large for JSON response on Vercel hobby. 
+      // Store temporarily and return a fetchable URL
+      // For now, just send it — Railway won't have this limit
+      clientUrl = imageUrl;
+    } else {
+      // OpenAI URL — proxy it
+      clientUrl = `/api/image-proxy?url=${encodeURIComponent(imageUrl)}`;
     }
 
-    return NextResponse.json({ imageUrl, method });
+    return NextResponse.json({ imageUrl: clientUrl });
   } catch (error: any) {
     const message = error?.message || 'Generation failed';
     console.error('Route error:', message);
