@@ -100,7 +100,7 @@ async function tryImageEdit(imageBuffer: Buffer, prompt: string, apiKey: string)
       'Authorization': `Bearer ${apiKey}`,
       'Content-Type': `multipart/form-data; boundary=${boundary}`,
     },
-    body,
+    body: new Uint8Array(body),
   });
 
   if (!response.ok) {
