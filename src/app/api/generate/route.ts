@@ -75,8 +75,10 @@ export async function POST(request: NextRequest) {
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
+      console.error('OPENAI_API_KEY is not set in environment');
       return NextResponse.json({ error: 'Server not configured' }, { status: 500 });
     }
+    console.log('API key found, length:', apiKey.length, 'prefix:', apiKey.substring(0, 7));
 
     const stylePrompt = STYLE_PROMPTS[style] || STYLE_PROMPTS.macro;
     const rawBase64 = irisImage.includes(',') ? irisImage.split(',')[1] : irisImage;
@@ -95,7 +97,7 @@ export async function POST(request: NextRequest) {
       });
 
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 55000);
+      const timer = setTimeout(() => controller.abort(), 120000);
 
       const resp = await fetch('https://api.openai.com/v1/images/edits', {
         method: 'POST',
@@ -129,7 +131,7 @@ export async function POST(request: NextRequest) {
     if (!imageUrl) {
       console.log('Falling back to text-to-image generation');
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 55000);
+      const timer = setTimeout(() => controller.abort(), 120000);
 
       const resp = await fetch('https://api.openai.com/v1/images/generations', {
         method: 'POST',
