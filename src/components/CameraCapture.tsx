@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState, useEffect, useCallback } from 'react';
+import { useRef, useState, useCallback } from 'react';
 
 interface CameraCaptureProps {
   onCapture: (imageDataUrl: string) => void;
@@ -11,130 +11,105 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('environment');
+  const [useBackCamera, setUseBackCamera] = useState(true);
 
-  const stopCamera = useCallback(() => {
-    if (videoRef.current?.srcObject) {
-      const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
-      tracks.forEach((track) => track.stop());
-      videoRef.current.srcObject = null;
+  const stopStream = useCallback(() => {
+    const video = videoRef.current;
+    if (video?.srcObject) {
+      (video.srcObject as MediaStream).getTracks().forEach(t => t.stop());
+      video.srcObject = null;
     }
     setStreaming(false);
   }, []);
 
-  const startCamera = useCallback(async () => {
+  const startCamera = useCallback(async (back: boolean) => {
     try {
-      // Stop any existing stream first
-      if (videoRef.current?.srcObject) {
-        stopCamera();
-      }
-
       setError(null);
+      // Stop any existing stream
+      const video = videoRef.current;
+      if (video?.srcObject) {
+        (video.srcObject as MediaStream).getTracks().forEach(t => t.stop());
+        video.srcObject = null;
+      }
 
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
-          facingMode,
+          facingMode: back ? 'environment' : 'user',
           width: { ideal: 1280 },
           height: { ideal: 720 },
         },
         audio: false,
       });
 
-      const video = videoRef.current;
-      if (!video) {
+      if (!videoRef.current) {
         stream.getTracks().forEach(t => t.stop());
         return;
       }
 
-      video.srcObject = stream;
+      const v = videoRef.current;
+      v.srcObject = stream;
 
-      // Critical for iOS Safari: must set these before play
-      video.setAttribute('playsinline', '');
-      video.setAttribute('autoplay', '');
-      video.setAttribute('muted', '');
-
-      // Wait for video to be ready
-      await new Promise<void>((resolve, reject) => {
-        video.onloadedmetadata = () => {
-          video.play()
-            .then(() => resolve())
-            .catch(() => resolve()); // auto-play may reject, that's ok
+      // iOS Safari: wait for metadata, then play
+      await new Promise<void>((resolve) => {
+        if (v.readyState >= 1) {
+          // Already loaded
+          v.play().then(resolve).catch(resolve);
+          return;
+        }
+        v.onloadedmetadata = () => {
+          v.play().then(resolve).catch(resolve);
         };
-        video.onerror = () => reject(new Error('Video element error'));
-        // Timeout fallback
-        setTimeout(() => resolve(), 3000);
+        setTimeout(resolve, 4000); // Safety timeout
       });
 
       setStreaming(true);
     } catch (err: any) {
       console.error('Camera error:', err);
-      const msg = err?.name === 'NotAllowedError'
-        ? 'Camera permission denied. Please allow camera access in Settings > Safari > Camera and reload the page.'
-        : err?.name === 'NotFoundError'
-        ? 'No camera found. Try uploading a photo instead.'
-        : 'Camera unavailable. Try uploading a photo instead.';
-      setError(msg);
-    }
-  }, [facingMode, stopCamera]);
-
-  // Auto-start when facingMode changes
-  useEffect(() => {
-    if (streaming) {
-      startCamera();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [facingMode]);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (videoRef.current?.srcObject) {
-        const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
-        tracks.forEach((track) => track.stop());
+      if (err?.name === 'NotAllowedError') {
+        setError('Camera permission denied. Allow camera in Safari settings and reload.');
+      } else if (err?.name === 'NotFoundError') {
+        setError('No camera found. Try uploading a photo instead.');
+      } else {
+        setError('Could not start camera. Try uploading a photo instead.');
       }
-    };
+      setStreaming(false);
+    }
   }, []);
 
-  const capturePhoto = () => {
+  const capturePhoto = useCallback(() => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    if (!video || !canvas) return;
+    if (!video || !canvas || video.videoWidth === 0) return;
 
-    // Use actual video dimensions
-    const w = video.videoWidth || 640;
-    const h = video.videoHeight || 480;
-    canvas.width = w;
-    canvas.height = h;
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
     const ctx = canvas.getContext('2d')!;
-
-    // Un-mirror for capture if using front camera
-    if (facingMode === 'user') {
-      ctx.translate(w, 0);
-      ctx.scale(-1, 1);
-    }
-    ctx.drawImage(video, 0, 0, w, h);
-
+    ctx.drawImage(video, 0, 0);
     const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
-    stopCamera();
+    stopStream();
     onCapture(dataUrl);
-  };
+  }, [onCapture, stopStream]);
 
-  const flipCamera = () => {
-    stopCamera();
-    setFacingMode((prev) => (prev === 'user' ? 'environment' : 'user'));
-  };
+  const handleFlip = useCallback(async () => {
+    const next = !useBackCamera;
+    setUseBackCamera(next);
+    setStreaming(false);
+    // Small delay to let state settle, then start new camera
+    setTimeout(() => startCamera(next), 200);
+  }, [useBackCamera, startCamera]);
 
   return (
     <div className="rounded-2xl p-6 max-w-lg mx-auto" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
       <canvas ref={canvasRef} style={{ display: 'none' }} />
 
+      {/* Pre-capture UI */}
       {!streaming && !error && (
         <div className="text-center py-8">
           <div className="text-6xl mb-4">📷</div>
-          <p className="text-gray-400 mb-6">Use your camera to capture a close-up of your eye</p>
+          <p className="text-gray-400 mb-6">Capture a close-up of your eye</p>
           <button
-            onClick={startCamera}
-            className="px-6 py-3 rounded-full text-white font-semibold hover:scale-105 transition-transform"
+            onClick={() => startCamera(useBackCamera)}
+            className="px-6 py-3 rounded-full text-white font-semibold text-lg active:scale-95 transition-transform"
             style={{ background: 'linear-gradient(135deg, #6a1bff, #ff6ab3)' }}
           >
             Open Camera
@@ -142,14 +117,15 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
         </div>
       )}
 
+      {/* Error */}
       {error && (
-        <div className="text-center py-4">
+        <div className="text-center py-6">
           <p className="text-red-400 text-sm mb-4">{error}</p>
           <div className="flex gap-3 justify-center">
             <button
-              onClick={startCamera}
-              className="px-4 py-2 text-sm rounded-full border text-gray-300 hover:bg-white/10"
-              style={{ borderColor: 'rgba(106,27,255,0.4)' }}
+              onClick={() => startCamera(useBackCamera)}
+              className="px-4 py-2 text-sm rounded-full text-white"
+              style={{ background: 'linear-gradient(135deg, #6a1bff, #ff6ab3)' }}
             >
               Try Again
             </button>
@@ -157,77 +133,89 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
         </div>
       )}
 
+      {/* Live camera feed */}
       {streaming && (
-        <div className="space-y-4">
-          {/* Video container - explicit dimensions for iOS */}
-          <div style={{ position: 'relative', width: '100%', borderRadius: '12px', overflow: 'hidden', background: '#000' }}>
+        <div>
+          <div style={{ position: 'relative', borderRadius: '12px', overflow: 'hidden', background: '#111', minHeight: '280px' }}>
             <video
               ref={videoRef}
               playsInline
               autoPlay
               muted
-              controls={false}
               style={{
                 width: '100%',
-                height: 'auto',
+                height: '100%',
                 display: 'block',
-                minHeight: '240px',
-                transform: facingMode === 'user' ? 'scaleX(-1)' : 'none',
                 objectFit: 'cover',
+                minHeight: '280px',
+                transform: useBackCamera ? 'none' : 'scaleX(-1)',
               }}
             />
-            {/* Guide overlay */}
+            {/* Eye guide circle */}
             <div style={{
               position: 'absolute',
-              inset: 0,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
+              top: '50%',
+              left: '50%',
+              transform: 'translate(-50%, -50%)',
+              width: '100px',
+              height: '100px',
+              border: '2px solid rgba(106, 27, 255, 0.6)',
+              borderRadius: '50%',
+              boxShadow: '0 0 20px rgba(106, 27, 255, 0.3)',
               pointerEvents: 'none',
-            }}>
-              <div style={{
-                width: '120px',
-                height: '120px',
-                border: '2px solid rgba(106,27,255,0.5)',
-                borderRadius: '50%',
-                boxShadow: '0 0 20px rgba(106,27,255,0.3)',
-              }} />
-            </div>
+            }} />
           </div>
 
-          {/* Controls */}
-          <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap' }}>
+          {/* Capture controls */}
+          <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', marginTop: '16px', flexWrap: 'wrap', alignItems: 'center' }}>
             <button
-              onClick={flipCamera}
-              className="px-4 py-2 rounded-full border text-gray-300 hover:bg-white/5 text-sm"
-              style={{ borderColor: 'rgba(255,255,255,0.2)', minWidth: '70px' }}
+              onClick={handleFlip}
+              style={{
+                padding: '8px 16px',
+                borderRadius: '9999px',
+                border: '1px solid rgba(255,255,255,0.2)',
+                color: '#d1d5db',
+                background: 'transparent',
+                fontSize: '14px',
+                minWidth: '60px',
+              }}
             >
-              🔄 Flip
+              🔄
             </button>
             <button
               onClick={capturePhoto}
-              className="px-8 py-3 rounded-full text-white font-semibold hover:scale-105 transition-transform"
-              style={{ background: 'linear-gradient(135deg, #6a1bff, #ff6ab3)', minWidth: '140px' }}
+              style={{
+                padding: '12px 32px',
+                borderRadius: '9999px',
+                background: 'linear-gradient(135deg, #6a1bff, #ff6ab3)',
+                color: '#fff',
+                fontWeight: 600,
+                fontSize: '16px',
+                minWidth: '140px',
+                border: 'none',
+              }}
             >
               📸 Capture
             </button>
             <button
-              onClick={() => stopCamera()}
-              className="px-4 py-2 rounded-full border text-gray-300 hover:bg-white/5 text-sm"
-              style={{ borderColor: 'rgba(255,255,255,0.2)', minWidth: '70px' }}
+              onClick={stopStream}
+              style={{
+                padding: '8px 16px',
+                borderRadius: '9999px',
+                border: '1px solid rgba(255,255,255,0.2)',
+                color: '#d1d5db',
+                background: 'transparent',
+                fontSize: '14px',
+                minWidth: '60px',
+              }}
             >
-              ✕ Cancel
+              ✕
             </button>
           </div>
-          <p className="text-center text-gray-500 text-xs">
-            Position your eye inside the circle. Use back camera for best results.
+          <p style={{ textAlign: 'center', color: '#6b7280', fontSize: '12px', marginTop: '12px' }}>
+            {useBackCamera ? 'Using back camera' : 'Using front camera'} — position your eye in the circle
           </p>
         </div>
-      )}
-
-      {/* Hidden video element as fallback — always mounted so iOS can attach stream */}
-      {!streaming && (
-        <video ref={videoRef} playsInline autoPlay muted style={{ display: 'none' }} />
       )}
     </div>
   );
