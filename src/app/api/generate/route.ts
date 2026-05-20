@@ -120,7 +120,7 @@ export async function POST(request: NextRequest) {
           'Authorization': `Bearer ${apiKey}`,
           'Content-Type': `multipart/form-data; boundary=${boundary}`,
         },
-        body: multipartBody,
+        body: multipartBody as any,
       });
 
       if (resp.ok) {
