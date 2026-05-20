@@ -11,60 +11,110 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
+  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('environment');
+
+  const stopCamera = useCallback(() => {
+    if (videoRef.current?.srcObject) {
+      const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
+      tracks.forEach((track) => track.stop());
+      videoRef.current.srcObject = null;
+    }
+    setStreaming(false);
+  }, []);
 
   const startCamera = useCallback(async () => {
     try {
+      // Stop any existing stream first
+      if (videoRef.current?.srcObject) {
+        stopCamera();
+      }
+
       setError(null);
+
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode,
           width: { ideal: 1280 },
           height: { ideal: 720 },
         },
+        audio: false,
       });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        // iOS Safari requires explicit play() after setting srcObject
-        try {
-          await videoRef.current.play();
-        } catch (playErr) {
-          // Some browsers play automatically, ignore play() rejection
-          console.log('Video play() note:', playErr);
-        }
-        setStreaming(true);
+
+      const video = videoRef.current;
+      if (!video) {
+        stream.getTracks().forEach(t => t.stop());
+        return;
       }
+
+      video.srcObject = stream;
+
+      // Critical for iOS Safari: must set these before play
+      video.setAttribute('playsinline', '');
+      video.setAttribute('autoplay', '');
+      video.setAttribute('muted', '');
+
+      // Wait for video to be ready
+      await new Promise<void>((resolve, reject) => {
+        video.onloadedmetadata = () => {
+          video.play()
+            .then(() => resolve())
+            .catch(() => resolve()); // auto-play may reject, that's ok
+        };
+        video.onerror = () => reject(new Error('Video element error'));
+        // Timeout fallback
+        setTimeout(() => resolve(), 3000);
+      });
+
+      setStreaming(true);
     } catch (err: any) {
+      console.error('Camera error:', err);
       const msg = err?.name === 'NotAllowedError'
-        ? 'Camera permission denied. Please allow camera access in your browser settings and try again.'
+        ? 'Camera permission denied. Please allow camera access in Settings > Safari > Camera and reload the page.'
         : err?.name === 'NotFoundError'
-        ? 'No camera found on this device. Try uploading a photo instead.'
-        : 'Camera access denied or unavailable. Try uploading a photo instead.';
+        ? 'No camera found. Try uploading a photo instead.'
+        : 'Camera unavailable. Try uploading a photo instead.';
       setError(msg);
     }
+  }, [facingMode, stopCamera]);
+
+  // Auto-start when facingMode changes
+  useEffect(() => {
+    if (streaming) {
+      startCamera();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [facingMode]);
 
-  const stopCamera = useCallback(() => {
-    if (videoRef.current?.srcObject) {
-      const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
-      tracks.forEach((track) => track.stop());
-      setStreaming(false);
-    }
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (videoRef.current?.srcObject) {
+        const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
+        tracks.forEach((track) => track.stop());
+      }
+    };
   }, []);
 
-  useEffect(() => {
-    return () => stopCamera();
-  }, [stopCamera]);
-
   const capturePhoto = () => {
-    if (!videoRef.current || !canvasRef.current) return;
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    if (!video || !canvas) return;
+
+    // Use actual video dimensions
+    const w = video.videoWidth || 640;
+    const h = video.videoHeight || 480;
+    canvas.width = w;
+    canvas.height = h;
     const ctx = canvas.getContext('2d')!;
-    ctx.drawImage(video, 0, 0);
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+
+    // Un-mirror for capture if using front camera
+    if (facingMode === 'user') {
+      ctx.translate(w, 0);
+      ctx.scale(-1, 1);
+    }
+    ctx.drawImage(video, 0, 0, w, h);
+
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
     stopCamera();
     onCapture(dataUrl);
   };
@@ -75,16 +125,17 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
   };
 
   return (
-    <div className="glass-card rounded-2xl p-6 max-w-lg mx-auto">
-      <canvas ref={canvasRef} className="hidden" />
-      
+    <div className="rounded-2xl p-6 max-w-lg mx-auto" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
+      <canvas ref={canvasRef} style={{ display: 'none' }} />
+
       {!streaming && !error && (
         <div className="text-center py-8">
           <div className="text-6xl mb-4">📷</div>
           <p className="text-gray-400 mb-6">Use your camera to capture a close-up of your eye</p>
           <button
             onClick={startCamera}
-            className="px-6 py-3 rounded-full animated-gradient text-white font-semibold hover:scale-105 transition-transform"
+            className="px-6 py-3 rounded-full text-white font-semibold hover:scale-105 transition-transform"
+            style={{ background: 'linear-gradient(135deg, #6a1bff, #ff6ab3)' }}
           >
             Open Camera
           </button>
@@ -93,57 +144,90 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
 
       {error && (
         <div className="text-center py-4">
-          <p className="text-red-400 text-sm">{error}</p>
-          <button
-            onClick={startCamera}
-            className="mt-4 px-4 py-2 text-sm rounded-full border border-iris-500/50 text-iris-300 hover:bg-iris-500/10"
-          >
-            Try Again
-          </button>
+          <p className="text-red-400 text-sm mb-4">{error}</p>
+          <div className="flex gap-3 justify-center">
+            <button
+              onClick={startCamera}
+              className="px-4 py-2 text-sm rounded-full border text-gray-300 hover:bg-white/10"
+              style={{ borderColor: 'rgba(106,27,255,0.4)' }}
+            >
+              Try Again
+            </button>
+          </div>
         </div>
       )}
 
       {streaming && (
         <div className="space-y-4">
-          <div className="relative rounded-xl overflow-hidden aspect-video bg-black">
+          {/* Video container - explicit dimensions for iOS */}
+          <div style={{ position: 'relative', width: '100%', borderRadius: '12px', overflow: 'hidden', background: '#000' }}>
             <video
               ref={videoRef}
-              autoPlay
               playsInline
+              autoPlay
               muted
               controls={false}
-              className="w-full h-full object-cover"
-              style={{ transform: facingMode === 'user' ? 'scaleX(-1)' : 'none' }}
+              style={{
+                width: '100%',
+                height: 'auto',
+                display: 'block',
+                minHeight: '240px',
+                transform: facingMode === 'user' ? 'scaleX(-1)' : 'none',
+                objectFit: 'cover',
+              }}
             />
             {/* Guide overlay */}
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="w-32 h-32 border-2 border-iris-400/50 rounded-full" />
+            <div style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              pointerEvents: 'none',
+            }}>
+              <div style={{
+                width: '120px',
+                height: '120px',
+                border: '2px solid rgba(106,27,255,0.5)',
+                borderRadius: '50%',
+                boxShadow: '0 0 20px rgba(106,27,255,0.3)',
+              }} />
             </div>
           </div>
-          <div className="flex gap-3 justify-center">
+
+          {/* Controls */}
+          <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap' }}>
             <button
               onClick={flipCamera}
-              className="px-4 py-2 rounded-full border border-white/20 text-gray-300 hover:bg-white/5 text-sm"
+              className="px-4 py-2 rounded-full border text-gray-300 hover:bg-white/5 text-sm"
+              style={{ borderColor: 'rgba(255,255,255,0.2)', minWidth: '70px' }}
             >
               🔄 Flip
             </button>
             <button
               onClick={capturePhoto}
-              className="px-8 py-3 rounded-full animated-gradient text-white font-semibold hover:scale-105 transition-transform"
+              className="px-8 py-3 rounded-full text-white font-semibold hover:scale-105 transition-transform"
+              style={{ background: 'linear-gradient(135deg, #6a1bff, #ff6ab3)', minWidth: '140px' }}
             >
               📸 Capture
             </button>
             <button
-              onClick={stopCamera}
-              className="px-4 py-2 rounded-full border border-white/20 text-gray-300 hover:bg-white/5 text-sm"
+              onClick={() => stopCamera()}
+              className="px-4 py-2 rounded-full border text-gray-300 hover:bg-white/5 text-sm"
+              style={{ borderColor: 'rgba(255,255,255,0.2)', minWidth: '70px' }}
             >
-              Cancel
+              ✕ Cancel
             </button>
           </div>
           <p className="text-center text-gray-500 text-xs">
-            Position your eye inside the circle. Get as close as possible for best results.
+            Position your eye inside the circle. Use back camera for best results.
           </p>
         </div>
+      )}
+
+      {/* Hidden video element as fallback — always mounted so iOS can attach stream */}
+      {!streaming && (
+        <video ref={videoRef} playsInline autoPlay muted style={{ display: 'none' }} />
       )}
     </div>
   );
