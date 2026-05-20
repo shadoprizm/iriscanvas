@@ -21,14 +21,13 @@ export default function ImageUpload({ onUpload }: ImageUploadProps) {
     setStatus('loading');
     setErrorMsg('');
 
-    // Resize image client-side to avoid memory issues on mobile
-    const img = new Image();
     const url = URL.createObjectURL(file);
+    const img = new Image();
     
     img.onload = () => {
       URL.revokeObjectURL(url);
       
-      // Cap at 1024x1024 for upload
+      // Cap at 1024x1024
       const MAX = 1024;
       let w = img.width;
       let h = img.height;
@@ -43,14 +42,15 @@ export default function ImageUpload({ onUpload }: ImageUploadProps) {
       const ctx = canvas.getContext('2d')!;
       ctx.drawImage(img, 0, 0, w, h);
 
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+      // Always output PNG — OpenAI edits endpoint requires it
+      const dataUrl = canvas.toDataURL('image/png');
       setStatus('idle');
       onUpload(dataUrl);
     };
 
     img.onerror = () => {
       URL.revokeObjectURL(url);
-      // Fallback: try FileReader directly
+      // Fallback: FileReader
       const reader = new FileReader();
       reader.onload = (e) => {
         const result = e.target?.result as string;
@@ -74,76 +74,43 @@ export default function ImageUpload({ onUpload }: ImageUploadProps) {
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      processFile(file);
-    }
+    if (file) processFile(file);
   };
 
   return (
-    <div
-      style={{
-        textAlign: 'center',
-        maxWidth: '500px',
-        margin: '0 auto',
-        padding: '32px 16px',
-        borderRadius: '16px',
-        background: 'rgba(255,255,255,0.03)',
-        border: '1px solid rgba(255,255,255,0.08)',
-      }}
-    >
-      <input
-        ref={inputRef}
-        type="file"
-        accept="image/jpeg,image/png,image/heic,image/heif"
-        onChange={handleChange}
-        style={{ display: 'none' }}
-      />
+    <div style={{
+      textAlign: 'center', maxWidth: '500px', margin: '0 auto',
+      padding: '32px 16px', borderRadius: '16px',
+      background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)',
+    }}>
+      <input ref={inputRef} type="file" accept="image/jpeg,image/png,image/heic,image/heif"
+        onChange={handleChange} style={{ display: 'none' }} />
       
-      {status === 'loading' && (
+      {status === 'loading' ? (
         <div style={{ padding: '20px 0' }}>
           <div style={{ fontSize: '36px', marginBottom: '12px' }}>⏳</div>
           <p style={{ color: '#999' }}>Processing your photo...</p>
         </div>
-      )}
-
-      {status === 'error' && (
-        <div style={{ padding: '12px 0', marginBottom: '8px' }}>
-          <p style={{ color: '#f87171', fontSize: '14px' }}>{errorMsg}</p>
-        </div>
-      )}
-
-      {status !== 'loading' && (
+      ) : (
         <>
+          {status === 'error' && errorMsg && (
+            <p style={{ color: '#f87171', fontSize: '14px', marginBottom: '12px' }}>{errorMsg}</p>
+          )}
           <div style={{ fontSize: '40px', marginBottom: '12px' }}>📁</div>
           <p style={{ color: '#999', marginBottom: '16px' }}>Upload a close-up photo of your eye</p>
           <button
-            onClick={() => {
-              if (inputRef.current) inputRef.current.value = '';
-              inputRef.current?.click();
-            }}
-            onTouchEnd={(e) => {
-              e.preventDefault();
-              if (inputRef.current) inputRef.current.value = '';
-              inputRef.current?.click();
-            }}
+            onClick={() => { if (inputRef.current) inputRef.current.value = ''; inputRef.current?.click(); }}
+            onTouchEnd={(e) => { e.preventDefault(); if (inputRef.current) inputRef.current.value = ''; inputRef.current?.click(); }}
             style={{
-              padding: '12px 28px',
-              borderRadius: '24px',
+              padding: '12px 28px', borderRadius: '24px',
               background: 'linear-gradient(135deg, #6a1bff, #ff6ab3)',
-              color: '#fff',
-              fontWeight: 600,
-              fontSize: '16px',
-              border: 'none',
-              WebkitAppearance: 'none',
-              cursor: 'pointer',
-              touchAction: 'manipulation',
+              color: '#fff', fontWeight: 600, fontSize: '16px',
+              border: 'none', WebkitAppearance: 'none', cursor: 'pointer', touchAction: 'manipulation',
             }}
           >
             Choose Photo
           </button>
-          <p style={{ color: '#6b7280', fontSize: '11px', marginTop: '12px' }}>
-            Select from your photo library
-          </p>
+          <p style={{ color: '#6b7280', fontSize: '11px', marginTop: '12px' }}>Select from your photo library</p>
         </>
       )}
     </div>
