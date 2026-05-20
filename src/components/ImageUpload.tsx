@@ -8,63 +8,116 @@ interface ImageUploadProps {
 
 export default function ImageUpload({ onUpload }: ImageUploadProps) {
   const inputRef = useRef<HTMLInputElement>(null);
-  const [dragActive, setDragActive] = useState(false);
+  const [status, setStatus] = useState<'idle' | 'loading' | 'error'>('idle');
+  const [errorMsg, setErrorMsg] = useState('');
 
   const processFile = (file: File) => {
-    if (!file.type.startsWith('image/')) return;
+    if (!file.type.startsWith('image/')) {
+      setErrorMsg('Please select an image file');
+      setStatus('error');
+      return;
+    }
+
+    setStatus('loading');
+    setErrorMsg('');
+
     const reader = new FileReader();
+    
     reader.onload = (e) => {
       const result = e.target?.result as string;
-      onUpload(result);
+      if (result) {
+        setStatus('idle');
+        onUpload(result);
+      } else {
+        setErrorMsg('Failed to read image');
+        setStatus('error');
+      }
     };
+
+    reader.onerror = () => {
+      setErrorMsg('Failed to read image. Try a different photo.');
+      setStatus('error');
+    };
+
     reader.readAsDataURL(file);
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) processFile(file);
+    if (file) {
+      processFile(file);
+    } else {
+      setErrorMsg('No file selected');
+      setStatus('error');
+    }
   };
 
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragActive(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file) processFile(file);
-  };
-
-  const handleDrag = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.type === 'dragenter' || e.type === 'dragover') setDragActive(true);
-    else if (e.type === 'dragleave') setDragActive(false);
+  // Reset the input so the same file can be selected again
+  const handleClick = () => {
+    if (inputRef.current) {
+      inputRef.current.value = '';
+    }
+    inputRef.current?.click();
   };
 
   return (
     <div
-      className={`glass-card rounded-2xl p-8 text-center max-w-lg mx-auto transition-colors ${
-        dragActive ? 'border-iris-500 bg-iris-500/5' : ''
-      }`}
-      onDragEnter={handleDrag}
-      onDragLeave={handleDrag}
-      onDragOver={handleDrag}
-      onDrop={handleDrop}
+      style={{
+        textAlign: 'center',
+        maxWidth: '500px',
+        margin: '0 auto',
+        padding: '32px 16px',
+        borderRadius: '16px',
+        background: 'rgba(255,255,255,0.03)',
+        border: '1px solid rgba(255,255,255,0.08)',
+      }}
     >
       <input
         ref={inputRef}
         type="file"
         accept="image/*"
+        capture="environment"
         onChange={handleChange}
-        className="hidden"
+        style={{ display: 'none' }}
       />
-      <div className="text-4xl mb-3">📁</div>
-      <p className="text-gray-400 mb-4">Upload a close-up photo of your eye</p>
-      <button
-        onClick={() => inputRef.current?.click()}
-        className="px-6 py-2 rounded-full border border-iris-500/50 text-iris-300 hover:bg-iris-500/10 transition-colors"
-      >
-        Choose File
-      </button>
-      <p className="text-gray-600 text-xs mt-3">or drag and drop an image here</p>
+      
+      {status === 'loading' && (
+        <div style={{ padding: '20px 0' }}>
+          <div style={{ fontSize: '36px', marginBottom: '12px' }}>⏳</div>
+          <p style={{ color: '#999' }}>Processing your photo...</p>
+        </div>
+      )}
+
+      {status === 'error' && (
+        <div style={{ padding: '12px 0' }}>
+          <p style={{ color: '#f87171', fontSize: '14px' }}>{errorMsg}</p>
+        </div>
+      )}
+
+      {status !== 'loading' && (
+        <>
+          <div style={{ fontSize: '40px', marginBottom: '12px' }}>📁</div>
+          <p style={{ color: '#999', marginBottom: '16px' }}>Upload a close-up photo of your eye</p>
+          <button
+            onClick={handleClick}
+            style={{
+              padding: '12px 28px',
+              borderRadius: '24px',
+              background: 'linear-gradient(135deg, #6a1bff, #ff6ab3)',
+              color: '#fff',
+              fontWeight: 600,
+              fontSize: '16px',
+              border: 'none',
+              WebkitAppearance: 'none',
+            }}
+          >
+            Choose Photo
+          </button>
+          <p style={{ color: '#6b7280', fontSize: '11px', marginTop: '12px' }}>
+            Take a new photo or choose from library
+          </p>
+        </>
+      )}
     </div>
   );
 }
