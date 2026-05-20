@@ -1,7 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Removed 'export' — need server runtime for /api/generate
-  distDir: 'web',
+  // No 'output: export' — API routes need server runtime
+  // No custom distDir — Vercel expects .next default
   images: {
     unoptimized: true,
   },
