@@ -1,6 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: 'export',
+  // Removed 'export' — need server runtime for /api/generate
   distDir: 'web',
   images: {
     unoptimized: true,
