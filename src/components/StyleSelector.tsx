@@ -6,45 +6,52 @@ interface StyleSelectorProps {
 
 const styles = [
   {
-    id: 'abstract',
-    name: 'Abstract',
-    desc: 'Fluid shapes and flowing colors',
-    emoji: '🌀',
-    gradient: 'from-purple-600 to-pink-500',
-  },
-  {
     id: 'cosmic',
-    name: 'Cosmic',
-    desc: 'Nebula-inspired deep space art',
+    name: 'Cosmic Nebula',
+    desc: 'Deep space nebula with stars and cosmic dust',
     emoji: '🌌',
     gradient: 'from-blue-600 to-indigo-600',
   },
   {
-    id: 'watercolor',
-    name: 'Watercolor',
-    desc: 'Soft, dreamy painted textures',
-    emoji: '🎨',
-    gradient: 'from-teal-500 to-cyan-500',
+    id: 'abstract',
+    name: 'Liquid Abstract',
+    desc: 'Fluid shapes with luminous saturated colors',
+    emoji: '🌀',
+    gradient: 'from-purple-600 to-pink-500',
   },
   {
     id: 'geometric',
-    name: 'Geometric',
-    desc: 'Sharp patterns and symmetry',
+    name: 'Sacred Geometry',
+    desc: 'Precise patterns with metallic gold accents',
     emoji: '💎',
     gradient: 'from-orange-500 to-red-500',
   },
   {
+    id: 'watercolor',
+    name: 'Watercolor',
+    desc: 'Soft, dreamy painted textures on white',
+    emoji: '🎨',
+    gradient: 'from-teal-500 to-cyan-500',
+  },
+  {
     id: 'surreal',
-    name: 'Surreal',
-    desc: 'Mind-bending dreamscapes',
+    name: 'Surreal Portal',
+    desc: 'Mind-bending dreamscape with infinite depth',
     emoji: '🔥',
     gradient: 'from-yellow-500 to-purple-600',
+  },
+  {
+    id: 'elemental',
+    name: 'Elemental',
+    desc: 'Fire, ice, water — your iris meets nature',
+    emoji: '🌊',
+    gradient: 'from-cyan-500 to-orange-500',
   },
 ];
 
 export default function StyleSelector({ onSelect }: StyleSelectorProps) {
   return (
-    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+    <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
       {styles.map((style) => (
         <button
           key={style.id}

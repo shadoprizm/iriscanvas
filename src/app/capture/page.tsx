@@ -20,73 +20,31 @@ export default function CapturePage() {
     setStep('style');
   };
 
-  const handleStyleSelect = (style: string) => {
+  const handleStyleSelect = async (style: string) => {
     setSelectedStyle(style);
     setStep('generating');
-    // Simulate generation — in production this calls the API
-    setTimeout(() => {
-      // For demo, we create a placeholder gradient art
-      const canvas = document.createElement('canvas');
-      canvas.width = 1024;
-      canvas.height = 1024;
-      const ctx = canvas.getContext('2d')!;
-      
-      // Create abstract art based on style
-      const gradients: Record<string, string[]> = {
-        abstract: ['#6a1bff', '#ff6ab3', '#4a0080', '#ff3d8e'],
-        cosmic: ['#0a0a2e', '#1a0a4e', '#6a1bff', '#00d4ff'],
-        watercolor: ['#6a1bff', '#00bcd4', '#8bc34a', '#ff9800'],
-        geometric: ['#6a1bff', '#ff6ab3', '#ffd700', '#00e676'],
-        surreal: ['#ff6ab3', '#6a1bff', '#00d4ff', '#ff3d00'],
-      };
-      
-      const colors = gradients[style] || gradients.abstract;
-      
-      // Background
-      const bgGrad = ctx.createRadialGradient(512, 512, 100, 512, 512, 512);
-      bgGrad.addColorStop(0, colors[0]);
-      bgGrad.addColorStop(0.5, colors[1]);
-      bgGrad.addColorStop(1, colors[2]);
-      ctx.fillStyle = bgGrad;
-      ctx.fillRect(0, 0, 1024, 1024);
-      
-      // Abstract shapes
-      for (let i = 0; i < 50; i++) {
-        const x = Math.random() * 1024;
-        const y = Math.random() * 1024;
-        const r = Math.random() * 200 + 20;
-        const grad = ctx.createRadialGradient(x, y, 0, x, y, r);
-        grad.addColorStop(0, colors[Math.floor(Math.random() * colors.length)] + 'aa');
-        grad.addColorStop(1, 'transparent');
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(x, y, r, 0, Math.PI * 2);
-        ctx.fill();
+
+    try {
+      const response = await fetch('/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ irisImage, style }),
+      });
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ error: 'Generation failed' }));
+        throw new Error(err.error || 'Generation failed');
       }
-      
-      // Iris center
-      const irisGrad = ctx.createRadialGradient(512, 512, 50, 512, 512, 300);
-      irisGrad.addColorStop(0, '#000000');
-      irisGrad.addColorStop(0.1, colors[3] || colors[0]);
-      irisGrad.addColorStop(0.5, colors[1] + 'cc');
-      irisGrad.addColorStop(1, 'transparent');
-      ctx.fillStyle = irisGrad;
-      ctx.beginPath();
-      ctx.arc(512, 512, 300, 0, Math.PI * 2);
-      ctx.fill();
-      
-      // Ring details
-      for (let ring = 0; ring < 8; ring++) {
-        ctx.strokeStyle = colors[ring % colors.length] + '44';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(512, 512, 100 + ring * 30, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-      
-      setGeneratedArt(canvas.toDataURL('image/png'));
+
+      const result = await response.json();
+      setGeneratedArt(result.imageUrl);
       setStep('result');
-    }, 3000);
+    } catch (error: any) {
+      console.error('Generation error:', error);
+      // Show error to user and go back to style selection
+      alert(error.message || 'Art generation failed. Please try again.');
+      setStep('style');
+    }
   };
 
   const handleReset = () => {
