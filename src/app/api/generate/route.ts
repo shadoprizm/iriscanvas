@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+export const maxDuration = 300; // 5 min — gpt-image-2 can take 2-3 min
 
 const STYLE_PROMPTS: Record<string, string> = {
   macro:
@@ -86,8 +86,9 @@ export async function POST(request: NextRequest) {
 
     let imageUrl: string | null = null;
 
-    // ATTEMPT 1: Image edit (sends the actual photo to OpenAI)
+    // Primary: Image edit — sends the actual iris photo to OpenAI
     try {
+      console.log('Starting image edit request...');
       const { body: multipartBody, boundary } = buildMultipart(imageBuffer, {
         prompt: stylePrompt,
         model: 'gpt-image-2',
@@ -97,7 +98,7 @@ export async function POST(request: NextRequest) {
       });
 
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 120000);
+      const timer = setTimeout(() => controller.abort(), 240000); // 4 min timeout
 
       const resp = await fetch('https://api.openai.com/v1/images/edits', {
         method: 'POST',
@@ -109,15 +110,14 @@ export async function POST(request: NextRequest) {
         signal: controller.signal,
       });
       clearTimeout(timer);
+      console.log('Edit response status:', resp.status);
 
       if (resp.ok) {
         const data = await resp.json();
         if (data.data?.[0]?.url) {
           imageUrl = data.data[0].url;
         } else if (data.data?.[0]?.b64_json) {
-          // b64 too large for Vercel response — fetch the image and return as a proxy URL
-          const b64 = data.data[0].b64_json;
-          imageUrl = `data:image/png;base64,${b64}`;
+          imageUrl = `data:image/png;base64,${data.data[0].b64_json}`;
         }
       } else {
         const err = await resp.json().catch(() => null);
@@ -127,11 +127,11 @@ export async function POST(request: NextRequest) {
       console.error('Edit exception:', e.message);
     }
 
-    // FALLBACK: Text-to-image generation
+    // Fallback: Text-to-image generation (faster, no iris reference)
     if (!imageUrl) {
       console.log('Falling back to text-to-image generation');
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 120000);
+      const timer = setTimeout(() => controller.abort(), 240000);
 
       const resp = await fetch('https://api.openai.com/v1/images/generations', {
         method: 'POST',
@@ -149,6 +149,7 @@ export async function POST(request: NextRequest) {
         signal: controller.signal,
       });
       clearTimeout(timer);
+      console.log('Generation response status:', resp.status);
 
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({ error: { message: resp.statusText } }));
