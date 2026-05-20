@@ -1,16 +1,30 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
-export const maxDuration = 300; // 5 min — gpt-image-2 can take 2-3 min
+export const maxDuration = 300; // 5 min — two-stage pipeline can take 2-4 min
 
 /**
- * Tiered image generation pipeline:
- *   Tier 1 (fast/cheap):  gpt-image-1-mini — ~$0.005/image, instant preview
- *   Tier 2 (best):        gpt-image-2 with iris reference — ~$0.10-2.00/image, final quality
+ * Two-stage, two-tier image generation pipeline:
  *
- * The frontend can request either tier via `?tier=preview` or `?tier=final` (default: preview).
- * This keeps costs down — users see a $0.005 preview first, then only pay for the $2 final if they want it.
+ * TIER: preview (default)
+ *   Stage 1: Enhance iris — gpt-image-1-mini edit (~$0.01, fast)
+ *   Stage 2: Transform  — gpt-image-1-mini text-to-image (~$0.005, fast)
+ *   Total: ~$0.015, completes in seconds
+ *
+ * TIER: final
+ *   Stage 1: Enhance iris — gpt-image-2 edit (~$0.10-0.50, 30-60s)
+ *   Stage 2: Transform  — gpt-image-2 edit with enhanced iris (~$0.10-0.50, 30-60s)
+ *   Total: ~$0.20-1.00, completes in 1-3 min
  */
+
+const ENHANCE_PROMPT =
+  `Enhance this iris photograph to professional macro-photography quality. ` +
+  `Perfectly isolate the round iris on a pure deep black background — remove all eyelid, eyelash, ` +
+  `and skin. Sharpen the iris fibers, collarette, and crypt details to medical-grade clarity. ` +
+  `Deepen the limbal ring. Make the pupil perfectly circular and absolute black. ` +
+  `Enhance the natural iris colors to be vivid and luminous while remaining realistic. ` +
+  `Professional lighting with subtle highlights on the iris texture. ` +
+  `Output as a centered, circular iris on solid black background. No text.`;
 
 const STYLE_PROMPTS: Record<string, string> = {
   macro:
@@ -57,9 +71,6 @@ const STYLE_PROMPTS: Record<string, string> = {
     `Dramatic lighting, photorealistic elements. Commercial-quality for large print. No text.`,
 };
 
-// Shorter prompts for the cheap preview model
-const PREVIEW_SUFFIX = ` Quick sketch version, lower detail, smaller image. No text.`;
-
 function buildMultipart(imageBuffer: Buffer, fields: Record<string, string>): { body: Buffer; boundary: string } {
   const boundary = '----IC' + Date.now() + Math.random().toString(36).slice(2);
   const parts: Buffer[] = [];
@@ -76,8 +87,111 @@ function buildMultipart(imageBuffer: Buffer, fields: Record<string, string>): { 
   return { body: Buffer.concat(parts), boundary };
 }
 
+async function imageEdit(
+  apiKey: string,
+  imageBuffer: Buffer,
+  prompt: string,
+  model: string,
+  size: string,
+  quality: string,
+  timeoutMs: number,
+): Promise<string | null> {
+  try {
+    const { body: multipartBody, boundary } = buildMultipart(imageBuffer, {
+      prompt,
+      model,
+      n: '1',
+      size,
+      quality,
+    });
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    const resp = await fetch('https://api.openai.com/v1/images/edits', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+      },
+      body: multipartBody as any,
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    console.log(`  imageEdit(${model}) status:`, resp.status);
+
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.data?.[0]?.b64_json) {
+        return `data:image/png;base64,${data.data[0].b64_json}`;
+      } else if (data.data?.[0]?.url) {
+        return data.data[0].url;
+      }
+    } else {
+      const err = await resp.json().catch(() => null);
+      console.error(`  imageEdit(${model}) failed:`, resp.status, err?.error?.message || 'unknown');
+    }
+  } catch (e: any) {
+    console.error(`  imageEdit(${model}) exception:`, e.message);
+  }
+  return null;
+}
+
+async function textToImage(
+  apiKey: string,
+  prompt: string,
+  model: string,
+  size: string,
+  quality: string,
+  timeoutMs: number,
+): Promise<string | null> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    const resp = await fetch('https://api.openai.com/v1/images/generations', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({ model, prompt, n: 1, size, quality }),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    console.log(`  textToImage(${model}) status:`, resp.status);
+
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.data?.[0]?.b64_json) {
+        return `data:image/png;base64,${data.data[0].b64_json}`;
+      } else if (data.data?.[0]?.url) {
+        return data.data[0].url;
+      }
+    } else {
+      const err = await resp.json().catch(() => null);
+      console.error(`  textToImage(${model}) failed:`, resp.status, err?.error?.message || 'unknown');
+    }
+  } catch (e: any) {
+    console.error(`  textToImage(${model}) exception:`, e.message);
+  }
+  return null;
+}
+
+function base64ToBuffer(dataUrl: string): Buffer {
+  const raw = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+  return Buffer.from(raw, 'base64');
+}
+
 export async function POST(request: NextRequest) {
   const tier = request.nextUrl.searchParams.get('tier') || 'preview';
+  const isFinal = tier === 'final';
+
+  // Model config per tier
+  const MODEL = isFinal ? 'gpt-image-2' : 'gpt-image-1-mini';
+  const SIZE = isFinal ? '1024x1024' : '512x512';
+  const QUALITY = isFinal ? 'low' : 'low';
+  const TIMEOUT = isFinal ? 240000 : 60000;
 
   try {
     const body = await request.json();
@@ -89,172 +203,62 @@ export async function POST(request: NextRequest) {
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      console.error('OPENAI_API_KEY is not set in environment');
+      console.error('OPENAI_API_KEY is not set');
       return NextResponse.json({ error: 'Server not configured' }, { status: 500 });
     }
 
     const stylePrompt = STYLE_PROMPTS[style] || STYLE_PROMPTS.macro;
-    const rawBase64 = irisImage.includes(',') ? irisImage.split(',')[1] : irisImage;
-    const imageBuffer = Buffer.from(rawBase64, 'base64');
+    const irisBuffer = base64ToBuffer(irisImage);
 
+    let enhancedBuffer: Buffer | null = null;
+    let enhancedDataUrl: string | null = null;
     let imageUrl: string | null = null;
 
-    if (tier === 'final') {
-      // ─── TIER 2: gpt-image-2 with iris reference (expensive, best quality) ───
-      console.log('FINAL tier: gpt-image-2 with iris edit');
+    // ═══════════════════════════════════════════
+    // STAGE 1: Enhance the raw iris photo
+    // ═══════════════════════════════════════════
+    console.log(`[${tier}] Stage 1: Enhancing iris with ${MODEL}...`);
 
-      // Attempt 1: Image edit — sends actual iris photo
-      try {
-        const { body: multipartBody, boundary } = buildMultipart(imageBuffer, {
-          prompt: stylePrompt,
-          model: 'gpt-image-2',
-          n: '1',
-          size: '1024x1024',
-          quality: 'low',
-        });
+    const enhancedResult = await imageEdit(apiKey, irisBuffer, ENHANCE_PROMPT, MODEL, SIZE, QUALITY, TIMEOUT);
 
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 240000);
-
-        const resp = await fetch('https://api.openai.com/v1/images/edits', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'Content-Type': `multipart/form-data; boundary=${boundary}`,
-          },
-          body: multipartBody as any,
-          signal: controller.signal,
-        });
-        clearTimeout(timer);
-        console.log('gpt-image-2 edit response:', resp.status);
-
-        if (resp.ok) {
-          const data = await resp.json();
-          if (data.data?.[0]?.b64_json) {
-            imageUrl = `data:image/png;base64,${data.data[0].b64_json}`;
-          } else if (data.data?.[0]?.url) {
-            imageUrl = data.data[0].url;
-          }
-        } else {
-          const err = await resp.json().catch(() => null);
-          console.error('gpt-image-2 edit failed:', resp.status, err?.error?.message || 'unknown');
-        }
-      } catch (e: any) {
-        console.error('gpt-image-2 edit exception:', e.message);
-      }
-
-      // Fallback: text-to-image with gpt-image-2 (no iris ref, still good)
-      if (!imageUrl) {
-        console.log('Falling back to gpt-image-2 text-to-image');
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 240000);
-
-        const resp = await fetch('https://api.openai.com/v1/images/generations', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify({
-            model: 'gpt-image-2',
-            prompt: stylePrompt,
-            n: 1,
-            size: '1024x1024',
-            quality: 'low',
-          }),
-          signal: controller.signal,
-        });
-        clearTimeout(timer);
-        console.log('gpt-image-2 generation response:', resp.status);
-
-        if (!resp.ok) {
-          const err = await resp.json().catch(() => ({ error: { message: resp.statusText } }));
-          throw new Error(err.error?.message || 'Generation failed');
-        }
-
-        const data = await resp.json();
-        if (data.data?.[0]?.b64_json) {
-          imageUrl = `data:image/png;base64,${data.data[0].b64_json}`;
-        } else if (data.data?.[0]?.url) {
-          imageUrl = data.data[0].url;
-        }
-      }
-
+    if (enhancedResult) {
+      console.log(`[${tier}] Stage 1 complete: iris enhanced`);
+      enhancedBuffer = base64ToBuffer(enhancedResult);
+      enhancedDataUrl = enhancedResult;
     } else {
-      // ─── TIER 1: gpt-image-1-mini text-to-image (cheap, fast preview) ───
-      console.log('PREVIEW tier: gpt-image-1-mini text-to-image');
-
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 60000); // 60s is plenty for mini
-
-      const resp = await fetch('https://api.openai.com/v1/images/generations', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: 'gpt-image-1-mini',
-          prompt: stylePrompt + PREVIEW_SUFFIX,
-          n: 1,
-          size: '512x512',
-          quality: 'low',
-        }),
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-      console.log('gpt-image-1-mini response:', resp.status);
-
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({ error: { message: resp.statusText } }));
-        console.error('Preview failed:', resp.status, err?.error?.message || 'unknown');
-
-        // If mini fails, try dall-e-3 as fallback (still cheap)
-        console.log('Falling back to dall-e-3');
-        const controller2 = new AbortController();
-        const timer2 = setTimeout(() => controller2.abort(), 60000);
-
-        const resp2 = await fetch('https://api.openai.com/v1/images/generations', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify({
-            model: 'dall-e-3',
-            prompt: stylePrompt,
-            n: 1,
-            size: '1024x1024',
-            quality: 'standard',
-          }),
-          signal: controller2.signal,
-        });
-        clearTimeout(timer2);
-        console.log('dall-e-3 response:', resp2.status);
-
-        if (resp2.ok) {
-          const data = await resp2.json();
-          if (data.data?.[0]?.url) {
-            imageUrl = data.data[0].url;
-          } else if (data.data?.[0]?.b64_json) {
-            imageUrl = `data:image/png;base64,${data.data[0].b64_json}`;
-          }
-        } else {
-          const err2 = await resp2.json().catch(() => ({ error: { message: resp2.statusText } }));
-          throw new Error(err2.error?.message || err?.error?.message || 'Preview generation failed');
-        }
-      } else {
-        const data = await resp.json();
-        if (data.data?.[0]?.b64_json) {
-          imageUrl = `data:image/png;base64,${data.data[0].b64_json}`;
-        } else if (data.data?.[0]?.url) {
-          imageUrl = data.data[0].url;
-        }
-      }
+      console.log(`[${tier}] Stage 1 failed, using raw iris for stage 2`);
+      enhancedBuffer = irisBuffer;
     }
 
-    if (!imageUrl) throw new Error('No image returned');
+    // ═══════════════════════════════════════════
+    // STAGE 2: Transform enhanced iris into art
+    // ═══════════════════════════════════════════
+    console.log(`[${tier}] Stage 2: Transforming iris into ${style} art with ${MODEL}...`);
 
+    // Try image edit with enhanced iris first
+    if (enhancedBuffer) {
+      imageUrl = await imageEdit(apiKey, enhancedBuffer, stylePrompt, MODEL, SIZE, QUALITY, TIMEOUT);
+    }
+
+    // Fallback: text-to-image (no iris reference, but still generates art)
+    if (!imageUrl) {
+      console.log(`[${tier}] Stage 2 edit failed, trying text-to-image...`);
+      imageUrl = await textToImage(apiKey, stylePrompt, MODEL, SIZE, QUALITY, TIMEOUT);
+    }
+
+    // Last resort for preview: try dall-e-3
+    if (!imageUrl && !isFinal) {
+      console.log(`[${tier}] gpt-image-1-mini failed, trying dall-e-3...`);
+      imageUrl = await textToImage(apiKey, stylePrompt, 'dall-e-3', '1024x1024', 'standard', 60000);
+    }
+
+    if (!imageUrl) {
+      throw new Error('All generation attempts failed');
+    }
+
+    console.log(`[${tier}] Pipeline complete`);
+
+    // Resolve proxy URLs for non-base64 images
     let clientUrl: string;
     if (imageUrl.startsWith('data:')) {
       clientUrl = imageUrl;
@@ -265,7 +269,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       imageUrl: clientUrl,
       tier,
+      enhanced: !!enhancedDataUrl,
     });
+
   } catch (error: any) {
     const message = error?.message || 'Generation failed';
     console.error('Route error:', message);
