@@ -6,6 +6,13 @@ interface StyleSelectorProps {
 
 const styles = [
   {
+    id: 'macro',
+    name: 'Macro Portrait',
+    desc: 'Professional macro photo — your iris, perfected',
+    emoji: '👁️',
+    gradient: 'from-amber-500 to-yellow-600',
+  },
+  {
     id: 'cosmic',
     name: 'Cosmic Nebula',
     desc: 'Deep space nebula with stars and cosmic dust',

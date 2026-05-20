@@ -63,6 +63,16 @@ const STYLE_PROMPTS: Record<string, string> = {
     `The pupil is a glowing energy source at the center. Dramatic lighting, photorealistic elements ` +
     `blending seamlessly with the iris texture. ` +
     `Ultra high detail, commercial-quality, suitable for large print. No text, no watermarks.`,
+
+  macro:
+    `Create a flawless professional macro photography portrait of this iris. ` +
+    `Perfectly isolate the circular iris on a pure deep black background with zero eyelid, eyelash, or skin visible. ` +
+    `Enhance every iris fiber, crypt, furrow, and collarette to medical-grade clarity and sharpness. ` +
+    `Deepen the limbal ring to a rich dark border. Make the pupil perfectly circular and absolute black. ` +
+    `Intensify the natural iris colors to be vivid and luminous — amber becomes molten gold, blue becomes electric sapphire, ` +
+    `green becomes emerald. Add professional ring-light reflection highlights. ` +
+    `The result should look like it was shot with a $5000 macro lens and professional studio lighting. ` +
+    `Gallery-quality, suitable for 30x30 inch metal print. No text, no watermarks.`,
 };
 
 const ENHANCE_PROMPT =
