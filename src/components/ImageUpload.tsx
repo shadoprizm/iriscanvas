@@ -76,7 +76,6 @@ export default function ImageUpload({ onUpload }: ImageUploadProps) {
         ref={inputRef}
         type="file"
         accept="image/*"
-        capture="environment"
         onChange={handleChange}
         style={{ display: 'none' }}
       />
