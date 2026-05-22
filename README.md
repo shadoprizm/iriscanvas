@@ -16,8 +16,8 @@ Turn your unique iris pattern into stunning AI-generated artwork.
 - **Next.js 14** with TypeScript
 - **Tailwind CSS** for styling
 - **HTML5 getUserMedia** for camera access
-- **OpenAI API** (gpt-image-1) for art generation (with client-side fallback)
-- **Static Export** for GitHub Pages deployment
+- **OpenAI API** (`gpt-image-2`) for iris enhancement and art generation
+- **Railway** for server-hosted Next.js deployment
 
 ## Getting Started
 
@@ -47,7 +47,7 @@ Open [http://localhost:3000](http://localhost:3000).
 npm run build
 ```
 
-Static files are output to `./web/`.
+The production build is emitted to `.next/` and must run with `npm start` or Railway's Next.js runtime.
 
 ### Production (with OpenAI)
 
@@ -55,34 +55,24 @@ Set the `OPENAI_API_KEY` environment variable for real AI generation:
 
 ```bash
 OPENAI_API_KEY=sk-... npm run build
+npm start
 ```
 
-Without an API key, the app uses a client-side demo generator.
+Without an API key, the generation API returns `Server not configured`.
 
 ## Deployment
 
-### GitHub Pages
+### Railway
 
-1. Push to GitHub
-2. Go to Settings → Pages
-3. Source: GitHub Actions
-4. The workflow in `.github/workflows/deploy.yml` handles the rest
+IrisCanvas is deployed on Railway from the GitHub `main` branch.
 
-### Manual Deploy
+Required Railway environment variable:
 
 ```bash
-npm run build
-# Upload contents of ./web/ to your hosting provider
+OPENAI_API_KEY=sk-...
 ```
 
-### Vercel (with API)
-
-For full API support (real AI generation), deploy to Vercel:
-
-```bash
-npx vercel
-# Set OPENAI_API_KEY in Vercel environment variables
-```
+GitHub Actions is CI only. It runs `npm ci` and `npm run build`; it does not deploy to GitHub Pages.
 
 ## Pricing Tiers
 
