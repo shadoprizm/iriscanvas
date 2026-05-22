@@ -76,19 +76,65 @@ function base64ToBuffer(dataUrl: string): Buffer {
   return Buffer.from(raw, 'base64');
 }
 
+async function imageToBuffer(image: string): Promise<Buffer> {
+  if (image.startsWith('http://') || image.startsWith('https://')) {
+    const resp = await fetch(image);
+    if (!resp.ok) throw new Error(`Failed to fetch source image: ${resp.status}`);
+    return Buffer.from(await resp.arrayBuffer());
+  }
+  return base64ToBuffer(image);
+}
+
+function fallbackArtDataUrl(style: string): string {
+  const palettes: Record<string, string[]> = {
+    macro: ['#020617', '#0f766e', '#facc15', '#38bdf8'],
+    cosmic: ['#020617', '#312e81', '#22d3ee', '#f472b6'],
+    abstract: ['#030712', '#14b8a6', '#f97316', '#a855f7'],
+    geometric: ['#020617', '#f59e0b', '#06b6d4', '#eab308'],
+    watercolor: ['#f8fafc', '#38bdf8', '#a7f3d0', '#f0abfc'],
+    surreal: ['#020617', '#7c3aed', '#fb7185', '#22d3ee'],
+    elemental: ['#020617', '#ef4444', '#38bdf8', '#f97316'],
+  };
+  const [bg, c1, c2, c3] = palettes[style] || palettes.abstract;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<rect width="1024" height="1024" fill="${bg}"/>
+<defs>
+<radialGradient id="iris" cx="50%" cy="50%" r="50%">
+<stop offset="0%" stop-color="#050505"/>
+<stop offset="18%" stop-color="#050505"/>
+<stop offset="28%" stop-color="${c1}"/>
+<stop offset="58%" stop-color="${c2}"/>
+<stop offset="82%" stop-color="${c3}"/>
+<stop offset="100%" stop-color="#050505"/>
+</radialGradient>
+<filter id="glow"><feGaussianBlur stdDeviation="10" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+</defs>
+<circle cx="512" cy="512" r="392" fill="url(#iris)" filter="url(#glow)"/>
+${Array.from({ length: 96 }, (_, i) => {
+  const angle = (i * 3.75).toFixed(2);
+  const width = i % 5 === 0 ? 5 : 2;
+  const color = i % 3 === 0 ? c1 : i % 3 === 1 ? c2 : c3;
+  return `<path d="M512 512 C548 360 590 252 512 130 C434 252 476 360 512 512" fill="none" stroke="${color}" stroke-width="${width}" stroke-opacity=".38" transform="rotate(${angle} 512 512)"/>`;
+}).join('')}
+<circle cx="512" cy="512" r="112" fill="#020202"/>
+<circle cx="512" cy="512" r="384" fill="none" stroke="#020202" stroke-width="38" opacity=".85"/>
+</svg>`;
+  return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+}
+
 async function imageEdit(
   apiKey: string, imageBuffer: Buffer, prompt: string, model: string, size: string, quality: string, timeoutMs: number,
 ): Promise<string | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const { body: mb, boundary } = buildMultipart(imageBuffer, { prompt, model, n: '1', size, quality });
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    timer = setTimeout(() => controller.abort(), timeoutMs);
     const resp = await fetch('https://api.openai.com/v1/images/edits', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': `multipart/form-data; boundary=${boundary}` },
       body: mb as any, signal: controller.signal,
     });
-    clearTimeout(timer);
     if (resp.ok) {
       const data = await resp.json();
       if (data.data?.[0]?.b64_json) return `data:image/png;base64,${data.data[0].b64_json}`;
@@ -98,22 +144,23 @@ async function imageEdit(
       console.error('imageEdit failed:', resp.status, err?.error?.message);
     }
   } catch (e: any) { console.error('imageEdit exception:', e.message); }
+  finally { if (timer) clearTimeout(timer); }
   return null;
 }
 
 async function textToImage(
   apiKey: string, prompt: string, model: string, size: string, quality: string, timeoutMs: number,
 ): Promise<string | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    timer = setTimeout(() => controller.abort(), timeoutMs);
     const resp = await fetch('https://api.openai.com/v1/images/generations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
       body: JSON.stringify({ model, prompt, n: 1, size, quality }),
       signal: controller.signal,
     });
-    clearTimeout(timer);
     if (resp.ok) {
       const data = await resp.json();
       if (data.data?.[0]?.b64_json) return `data:image/png;base64,${data.data[0].b64_json}`;
@@ -123,6 +170,7 @@ async function textToImage(
       console.error('textToImage failed:', resp.status, err?.error?.message);
     }
   } catch (e: any) { console.error('textToImage exception:', e.message); }
+  finally { if (timer) clearTimeout(timer); }
   return null;
 }
 
@@ -135,7 +183,7 @@ export async function POST(request: NextRequest) {
   const MODEL = 'gpt-image-2';
   const SIZE = '1024x1024';
   const QUALITY = isFinal ? 'high' : 'low';
-  const TIMEOUT = isFinal ? 240000 : 120000;
+  const TIMEOUT = isFinal ? 210000 : 55000;
 
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return NextResponse.json({ error: 'Server not configured' }, { status: 500 });
@@ -148,7 +196,7 @@ export async function POST(request: NextRequest) {
       const { irisImage } = body as { irisImage?: string };
       if (!irisImage) return NextResponse.json({ error: 'Image required' }, { status: 400 });
 
-      const irisBuffer = base64ToBuffer(irisImage);
+      const irisBuffer = await imageToBuffer(irisImage);
       console.log(`[enhance] Enhancing iris with ${MODEL} low...`);
 
       let enhancedUrl = await imageEdit(apiKey, irisBuffer, ENHANCE_PROMPT, MODEL, SIZE, 'low', TIMEOUT);
@@ -165,7 +213,7 @@ export async function POST(request: NextRequest) {
       if (!enhancedImage || !style) return NextResponse.json({ error: 'Enhanced image and style required' }, { status: 400 });
 
       const stylePrompt = STYLE_PROMPTS[style] || STYLE_PROMPTS.macro;
-      const enhancedBuffer = base64ToBuffer(enhancedImage);
+      const enhancedBuffer = await imageToBuffer(enhancedImage);
       console.log(`[transform] Creating ${style} art with ${MODEL} ${QUALITY}...`);
 
       let artUrl = await imageEdit(apiKey, enhancedBuffer, stylePrompt, MODEL, SIZE, QUALITY, TIMEOUT);
@@ -178,10 +226,14 @@ export async function POST(request: NextRequest) {
       // Last resort for preview: dall-e-3
       if (!artUrl && !isFinal) {
         console.log('[transform] Trying dall-e-3 fallback...');
-        artUrl = await textToImage(apiKey, stylePrompt, 'dall-e-3', '1024x1024', 'standard', 60000);
+        artUrl = await textToImage(apiKey, stylePrompt, 'dall-e-3', '1024x1024', 'standard', 45000);
       }
 
-      if (!artUrl) throw new Error('All generation attempts failed');
+      if (!artUrl) {
+        if (isFinal) throw new Error('HD generation timed out. Preview is still available.');
+        console.log('[transform] AI generation failed, returning local fallback art');
+        artUrl = fallbackArtDataUrl(style);
+      }
 
       let clientUrl: string;
       if (artUrl.startsWith('data:')) {
