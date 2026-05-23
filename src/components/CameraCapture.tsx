@@ -26,6 +26,12 @@ type IrisGuideScore = {
 };
 
 type CameraCapabilities = MediaTrackCapabilities & {
+  focusDistance?: {
+    min: number;
+    max: number;
+    step?: number;
+  };
+  focusMode?: string[];
   torch?: boolean;
   zoom?: {
     min: number;
@@ -35,6 +41,8 @@ type CameraCapabilities = MediaTrackCapabilities & {
 };
 
 type CameraSettings = MediaTrackSettings & {
+  focusDistance?: number;
+  focusMode?: string;
   zoom?: number;
 };
 
@@ -144,6 +152,12 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
   const [zoomValue, setZoomValue] = useState(1);
   const [torchSupported, setTorchSupported] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
+  const [refocusSupported, setRefocusSupported] = useState(false);
+  const [manualFocusSupported, setManualFocusSupported] = useState(false);
+  const [focusMin, setFocusMin] = useState(0);
+  const [focusMax, setFocusMax] = useState(0);
+  const [focusStep, setFocusStep] = useState(0.1);
+  const [focusValue, setFocusValue] = useState(0);
   const animFrameRef = useRef<number>(0);
   const capturedRef = useRef(false);
   const captureTimeoutRef = useRef<number>(0);
@@ -207,6 +221,7 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
 
       setTorchSupported(Boolean(capabilities?.torch));
       setTorchOn(false);
+      setRefocusSupported(Boolean(capabilities?.focusMode?.includes('single-shot')));
 
       if (zoom && Number.isFinite(zoom.min) && Number.isFinite(zoom.max) && zoom.max > zoom.min) {
         const nextZoom = Math.max(zoom.min, Math.min(zoom.max, settings?.zoom ?? zoom.min));
@@ -221,6 +236,26 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
         setZoomMax(1);
         setZoomStep(0.1);
         setZoomValue(1);
+      }
+
+      if (capabilities?.focusMode?.includes('continuous')) {
+        track.applyConstraints({ advanced: [{ focusMode: 'continuous' } as MediaTrackConstraintSet] }).catch(() => {});
+      }
+
+      const focusDistance = capabilities?.focusDistance;
+      if (focusDistance && Number.isFinite(focusDistance.min) && Number.isFinite(focusDistance.max) && focusDistance.max > focusDistance.min) {
+        const nextFocus = Math.max(focusDistance.min, Math.min(focusDistance.max, settings?.focusDistance ?? focusDistance.min));
+        setManualFocusSupported(true);
+        setFocusMin(focusDistance.min);
+        setFocusMax(focusDistance.max);
+        setFocusStep(focusDistance.step || 0.1);
+        setFocusValue(nextFocus);
+      } else {
+        setManualFocusSupported(false);
+        setFocusMin(0);
+        setFocusMax(0);
+        setFocusStep(0.1);
+        setFocusValue(0);
       }
     } catch (e: any) {
       setErrorMsg(e.name === 'NotAllowedError'
@@ -288,6 +323,8 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
     setAutoArmed(false);
     setAutoCountdown(0);
     setTorchOn(false);
+    setRefocusSupported(false);
+    setManualFocusSupported(false);
     stableIrisFramesRef.current = 0;
   }, []);
 
@@ -306,6 +343,8 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
     setAutoArmed(false);
     setAutoCountdown(0);
     setTorchOn(false);
+    setRefocusSupported(false);
+    setManualFocusSupported(false);
     stableIrisFramesRef.current = 0;
     const next = facingMode === 'environment' ? 'user' : 'environment';
     setFacingMode(next);
@@ -379,6 +418,19 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
     const applied = await applyCameraConstraint({ torch: nextTorch } as MediaTrackConstraintSet);
     if (applied) setTorchOn(nextTorch);
   }, [applyCameraConstraint, torchOn]);
+
+  const handleRefocus = useCallback(async () => {
+    await applyCameraConstraint({ focusMode: 'single-shot' } as MediaTrackConstraintSet);
+  }, [applyCameraConstraint]);
+
+  const handleFocusChange = useCallback(async (nextFocus: number) => {
+    const clampedFocus = Math.max(focusMin, Math.min(focusMax, nextFocus));
+    setFocusValue(clampedFocus);
+    await applyCameraConstraint({
+      focusDistance: clampedFocus,
+      focusMode: 'manual',
+    } as MediaTrackConstraintSet);
+  }, [applyCameraConstraint, focusMax, focusMin]);
 
   // Auto-detect iris loop
   useEffect(() => {
@@ -544,6 +596,9 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
               {torchOn ? '🔦 Off' : '🔦 Flash'}
             </button>
           )}
+          {refocusSupported && (
+            <button onClick={handleRefocus} style={smallBtnStyle}>◎ Focus</button>
+          )}
         </div>
 
         {zoomSupported && (
@@ -573,6 +628,38 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
               step={zoomStep}
               value={zoomValue}
               onChange={(event) => handleZoomChange(Number(event.target.value))}
+              style={{ width: '100%', accentColor: '#9a5cff' }}
+            />
+          </div>
+        )}
+
+        {manualFocusSupported && (
+          <div style={{
+            maxWidth: '360px',
+            margin: '10px auto 0',
+            padding: '10px 14px',
+            borderRadius: '14px',
+            background: 'rgba(255,255,255,0.05)',
+            border: '1px solid rgba(255,255,255,0.12)',
+          }}>
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              color: '#9ca3af',
+              fontSize: '12px',
+              marginBottom: '8px',
+            }}>
+              <span>Focus</span>
+              <span>{focusValue.toFixed(focusStep >= 1 ? 0 : 1)}</span>
+            </div>
+            <input
+              type="range"
+              min={focusMin}
+              max={focusMax}
+              step={focusStep}
+              value={focusValue}
+              onChange={(event) => handleFocusChange(Number(event.target.value))}
               style={{ width: '100%', accentColor: '#9a5cff' }}
             />
           </div>
