@@ -36,28 +36,48 @@ export async function analyzeIris(imageDataUrl: string): Promise<IrisAnalysis> {
       const imageData = ctx.getImageData(0, 0, size, size);
       const data = imageData.data;
 
-      // Extract color samples
+      // Extract color samples from the central iris annulus, not the surrounding
+      // skin/sclera. This is intentionally conservative; bad colors here become
+      // prompt instructions downstream.
       const colorBuckets: Record<string, number> = {};
       let totalR = 0, totalG = 0, totalB = 0;
       let totalBrightness = 0;
-      const pixelCount = size * size;
+      let sampledPixels = 0;
 
-      for (let i = 0; i < data.length; i += 16) { // Sample every 4th pixel
-        const r = data[i];
-        const g = data[i + 1];
-        const b = data[i + 2];
+      for (let y = 0; y < size; y += 2) {
+        for (let x = 0; x < size; x += 2) {
+          const dx = x - size / 2;
+          const dy = y - size / 2;
+          const radius = Math.sqrt(dx * dx + dy * dy);
+          if (radius < 24 || radius > 116) continue;
+
+          const i = (y * size + x) * 4;
+          const r = data[i];
+          const g = data[i + 1];
+          const b = data[i + 2];
+          const brightness = (r + g + b) / 3;
+
+          // Skip pupil/black background, sclera highlights, and obvious skin.
+          if (brightness < 28 || brightness > 230) continue;
+          const max = Math.max(r, g, b);
+          const min = Math.min(r, g, b);
+          if (max - min < 10) continue;
+          const likelySkin = r > 120 && g > 75 && b > 45 && r > g * 1.12 && g > b * 1.08;
+          if (likelySkin) continue;
         
-        totalR += r;
-        totalG += g;
-        totalB += b;
-        totalBrightness += (r + g + b) / 3;
+          totalR += r;
+          totalG += g;
+          totalB += b;
+          totalBrightness += brightness;
+          sampledPixels++;
 
-        // Quantize to reduce color space
-        const qr = Math.round(r / 32) * 32;
-        const qg = Math.round(g / 32) * 32;
-        const qb = Math.round(b / 32) * 32;
-        const key = `${qr},${qg},${qb}`;
-        colorBuckets[key] = (colorBuckets[key] || 0) + 1;
+          // Quantize to reduce color space
+          const qr = Math.round(r / 32) * 32;
+          const qg = Math.round(g / 32) * 32;
+          const qb = Math.round(b / 32) * 32;
+          const key = `${qr},${qg},${qb}`;
+          colorBuckets[key] = (colorBuckets[key] || 0) + 1;
+        }
       }
 
       // Sort by frequency
@@ -82,16 +102,11 @@ export async function analyzeIris(imageDataUrl: string): Promise<IrisAnalysis> {
         .slice(0, 5);
 
       // Generate accent colors (complementary/analogous)
-      const accentColors = dominantColors.length > 0
-        ? [
-            shiftHue(dominantColors[0], 180),
-            shiftHue(dominantColors[0], 60),
-            shiftHue(dominantColors[Math.min(1, dominantColors.length - 1)], -60),
-          ]
-        : ['#6a1bff', '#ff6ab3', '#00d4ff'];
+      const accentColors = dominantColors.slice(0, 3);
 
-      const avgBrightness = totalBrightness / (pixelCount / 4);
-      const warmth = (totalR - totalB) / (pixelCount / 4);
+      const divisor = Math.max(sampledPixels, 1);
+      const avgBrightness = totalBrightness / divisor;
+      const warmth = (totalR - totalB) / divisor;
 
       // Determine pattern type based on color variance
       const sampleCount = Math.floor(data.length / 16);
@@ -109,53 +124,4 @@ export async function analyzeIris(imageDataUrl: string): Promise<IrisAnalysis> {
     };
     img.src = imageDataUrl;
   });
-}
-
-function shiftHue(hex: string, degrees: number): string {
-  const color = hex.replace('#', '');
-  const r = parseInt(color.substr(0, 2), 16) / 255;
-  const g = parseInt(color.substr(2, 2), 16) / 255;
-  const b = parseInt(color.substr(4, 2), 16) / 255;
-
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const l = (max + min) / 2;
-  const d = max - min;
-  const s = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
-
-  let h = 0;
-  if (d !== 0) {
-    if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
-    else if (max === g) h = ((b - r) / d + 2) / 6;
-    else h = ((r - g) / d + 4) / 6;
-  }
-
-  h = ((h * 360 + degrees) % 360) / 360;
-
-  return hslToHex(h, s, l);
-}
-
-function hslToHex(h: number, s: number, l: number): string {
-  const hue2rgb = (p: number, q: number, t: number) => {
-    if (t < 0) t += 1;
-    if (t > 1) t -= 1;
-    if (t < 1 / 6) return p + (q - p) * 6 * t;
-    if (t < 1 / 2) return q;
-    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
-    return p;
-  };
-
-  let r: number, g: number, b: number;
-  if (s === 0) {
-    r = g = b = l;
-  } else {
-    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-    const p = 2 * l - q;
-    r = hue2rgb(p, q, h + 1 / 3);
-    g = hue2rgb(p, q, h);
-    b = hue2rgb(p, q, h - 1 / 3);
-  }
-
-  const toHex = (x: number) => Math.round(x * 255).toString(16).padStart(2, '0');
-  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
 }

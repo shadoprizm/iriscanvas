@@ -6,22 +6,42 @@ import ImageUpload from '@/components/ImageUpload';
 import StyleSelector from '@/components/StyleSelector';
 import ArtDisplay from '@/components/ArtDisplay';
 import Footer from '@/components/Footer';
+import { analyzeIris, type IrisAnalysis } from '@/lib/irisAnalyzer';
 
 type Step = 'capture' | 'style' | 'enhancing' | 'transforming' | 'result';
 
 export default function CapturePage() {
   const [step, setStep] = useState<Step>('capture');
   const [irisImage, setIrisImage] = useState<string | null>(null);
+  const [irisAnalysis, setIrisAnalysis] = useState<IrisAnalysis | null>(null);
   const [selectedStyle, setSelectedStyle] = useState<string | null>(null);
   const [generatedArt, setGeneratedArt] = useState<string | null>(null);
 
   const handleCapture = (imageDataUrl: string) => {
     setIrisImage(imageDataUrl);
+    setIrisAnalysis(null);
     setStep('style');
+
+    analyzeIris(imageDataUrl)
+      .then(setIrisAnalysis)
+      .catch((error) => console.error('Iris analysis failed:', error));
+  };
+
+  const getIrisAnalysis = async () => {
+    if (irisAnalysis || !irisImage) return irisAnalysis;
+    try {
+      const analysis = await analyzeIris(irisImage);
+      setIrisAnalysis(analysis);
+      return analysis;
+    } catch (error) {
+      console.error('Iris analysis failed:', error);
+      return null;
+    }
   };
 
   const handleStyleSelect = async (style: string) => {
     setSelectedStyle(style);
+    const analysis = await getIrisAnalysis();
 
     // STAGE 1: Enhance the iris
     setStep('enhancing');
@@ -31,7 +51,7 @@ export default function CapturePage() {
       const enhanceResp = await fetch('/api/generate?stage=enhance&tier=preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ irisImage }),
+        body: JSON.stringify({ irisImage, irisAnalysis: analysis }),
       });
 
       if (!enhanceResp.ok) {
@@ -53,7 +73,7 @@ export default function CapturePage() {
       const transformResp = await fetch('/api/generate?stage=transform&tier=preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enhancedImage, style }),
+        body: JSON.stringify({ enhancedImage, style, irisAnalysis: analysis }),
       });
 
       if (!transformResp.ok) {
@@ -73,6 +93,7 @@ export default function CapturePage() {
 
   const handleGenerateHD = async () => {
     if (!irisImage || !selectedStyle) return;
+    const analysis = await getIrisAnalysis();
 
     // STAGE 1 HD: Re-enhance
     setStep('enhancing');
@@ -82,7 +103,7 @@ export default function CapturePage() {
       const enhanceResp = await fetch('/api/generate?stage=enhance&tier=final', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ irisImage }),
+        body: JSON.stringify({ irisImage, irisAnalysis: analysis }),
       });
 
       if (!enhanceResp.ok) {
@@ -104,7 +125,7 @@ export default function CapturePage() {
       const transformResp = await fetch('/api/generate?stage=transform&tier=final', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enhancedImage, style: selectedStyle }),
+        body: JSON.stringify({ enhancedImage, style: selectedStyle, irisAnalysis: analysis }),
       });
 
       if (!transformResp.ok) {
@@ -125,6 +146,7 @@ export default function CapturePage() {
   const handleReset = () => {
     setStep('capture');
     setIrisImage(null);
+    setIrisAnalysis(null);
     setSelectedStyle(null);
     setGeneratedArt(null);
   };
@@ -133,6 +155,7 @@ export default function CapturePage() {
     if (step === 'style') {
       setStep('capture');
       setIrisImage(null);
+      setIrisAnalysis(null);
     } else if (step === 'result') {
       setStep('style');
       setGeneratedArt(null);
