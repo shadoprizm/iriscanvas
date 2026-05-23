@@ -17,12 +17,14 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
   const animFrameRef = useRef<number>(0);
   const capturedRef = useRef(false);
   const captureTimeoutRef = useRef<number>(0);
+  const stableIrisFramesRef = useRef(0);
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
       cancelAnimationFrame(animFrameRef.current);
       window.clearTimeout(captureTimeoutRef.current);
+      captureTimeoutRef.current = 0;
       const v = videoRef.current;
       if (v?.srcObject) {
         (v.srcObject as MediaStream).getTracks().forEach(t => t.stop());
@@ -60,6 +62,7 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
 
       setCameraActive(true);
       capturedRef.current = false;
+      stableIrisFramesRef.current = 0;
     } catch (e: any) {
       setErrorMsg(e.name === 'NotAllowedError'
         ? 'Please allow camera access and reload'
@@ -72,8 +75,10 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
   const takePhoto = useCallback(() => {
     if (capturedRef.current) return;
     capturedRef.current = true;
+    stableIrisFramesRef.current = 0;
     cancelAnimationFrame(animFrameRef.current);
     window.clearTimeout(captureTimeoutRef.current);
+    captureTimeoutRef.current = 0;
 
     const v = videoRef.current;
     const c = canvasRef.current;
@@ -94,6 +99,7 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
   const closeCamera = useCallback(() => {
     cancelAnimationFrame(animFrameRef.current);
     window.clearTimeout(captureTimeoutRef.current);
+    captureTimeoutRef.current = 0;
     const v = videoRef.current;
     if (v?.srcObject) {
       (v.srcObject as MediaStream).getTracks().forEach(t => t.stop());
@@ -101,17 +107,20 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
     }
     setCameraActive(false);
     setAutoStatus('');
+    stableIrisFramesRef.current = 0;
   }, []);
 
   const handleFlip = useCallback(async () => {
     cancelAnimationFrame(animFrameRef.current);
     window.clearTimeout(captureTimeoutRef.current);
+    captureTimeoutRef.current = 0;
     const v = videoRef.current;
     if (v?.srcObject) {
       (v.srcObject as MediaStream).getTracks().forEach(t => t.stop());
       v.srcObject = null;
     }
     setCameraActive(false);
+    stableIrisFramesRef.current = 0;
     const next = facingMode === 'environment' ? 'user' : 'environment';
     setFacingMode(next);
     setTimeout(() => startStream(next), 300);
@@ -145,39 +154,49 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
       const imageData = ctx.getImageData(0, 0, size, size);
       const pixels = imageData.data;
 
-      // Analyze center region for dark pupil
-      const innerSize = 30;
-      const innerStart = (size / 2 - innerSize / 2) * size + (size / 2 - innerSize / 2);
-      let centerBrightness = 0;
-      let centerPixels = 0;
-      for (let y = 0; y < innerSize; y++) {
-        for (let x = 0; x < innerSize; x++) {
-          const idx = (innerStart + y * size + x) * 4;
-          centerBrightness += (pixels[idx] + pixels[idx + 1] + pixels[idx + 2]) / 3;
-          centerPixels++;
-        }
-      }
-      centerBrightness /= centerPixels;
-
-      // Outer ring for iris color
+      // Score the target for an eye-like structure: a centered dark pupil with
+      // an iris annulus filling most of the guide circle.
+      let pupilBrightness = 0;
+      let pupilDarkPixels = 0;
+      let pupilPixels = 0;
+      let irisBrightness = 0;
+      let irisSaturation = 0;
+      let irisCandidatePixels = 0;
+      let irisPixels = 0;
       let outerBrightness = 0;
-      let outerSaturation = 0;
-      let outerCount = 0;
-      for (let y = 0; y < size; y += 3) {
-        for (let x = 0; x < size; x += 3) {
-          const dist = Math.sqrt((x - size/2) ** 2 + (y - size/2) ** 2);
-          if (dist > 35 && dist < 50) {
-            const idx = (y * size + x) * 4;
-            const r = pixels[idx], g = pixels[idx + 1], b = pixels[idx + 2];
-            outerBrightness += (r + g + b) / 3;
-            const max = Math.max(r, g, b), min = Math.min(r, g, b);
-            outerSaturation += (max === 0 ? 0 : (max - min) / max);
-            outerCount++;
+      let outerPixels = 0;
+
+      for (let y = 0; y < size; y += 2) {
+        for (let x = 0; x < size; x += 2) {
+          const dx = x - size / 2;
+          const dy = y - size / 2;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          const idx = (y * size + x) * 4;
+          const r = pixels[idx], g = pixels[idx + 1], b = pixels[idx + 2];
+          const brightness = (r + g + b) / 3;
+          const max = Math.max(r, g, b), min = Math.min(r, g, b);
+          const saturation = max === 0 ? 0 : (max - min) / max;
+
+          if (dist <= 18) {
+            pupilBrightness += brightness;
+            pupilPixels++;
+            if (brightness < 80) pupilDarkPixels++;
+          } else if (dist >= 30 && dist <= 54) {
+            irisBrightness += brightness;
+            irisSaturation += saturation;
+            irisPixels++;
+            if (brightness > 35 && brightness < 215 && saturation > 0.07) irisCandidatePixels++;
+          } else if (dist >= 56 && dist <= 60) {
+            outerBrightness += brightness;
+            outerPixels++;
           }
         }
       }
-      outerBrightness /= (outerCount || 1);
-      outerSaturation /= (outerCount || 1);
+
+      pupilBrightness /= (pupilPixels || 1);
+      irisBrightness /= (irisPixels || 1);
+      irisSaturation /= (irisPixels || 1);
+      outerBrightness /= (outerPixels || 1);
 
       // Full region brightness (lighting check)
       let totalBrightness = 0;
@@ -186,23 +205,38 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
       }
       totalBrightness /= (pixels.length / 16);
 
-      const contrast = Math.abs(outerBrightness - centerBrightness);
+      const pupilDarkRatio = pupilDarkPixels / (pupilPixels || 1);
+      const irisFillRatio = irisCandidatePixels / (irisPixels || 1);
+      const pupilToIrisContrast = irisBrightness - pupilBrightness;
+      const limbalContrast = Math.abs(outerBrightness - irisBrightness);
 
-      // Relaxed detection - prefer false positives over misses
-      const hasPupil = centerBrightness < 120;      // generous threshold
-      const hasContrast = contrast > 15;            // lower bar
-      const hasLight = totalBrightness > 30;        // very low floor
-      const hasColor = outerSaturation > 0.05;      // some iris color
+      const hasCenteredPupil = pupilBrightness < 90 && pupilDarkRatio > 0.45 && pupilDarkRatio < 0.95;
+      const irisFillsTarget = irisFillRatio > 0.38 && irisSaturation > 0.09;
+      const hasIrisContrast = pupilToIrisContrast > 32 && limbalContrast > 8;
+      const hasLight = totalBrightness > 35 && totalBrightness < 220;
+      const irisReady = hasCenteredPupil && irisFillsTarget && hasIrisContrast && hasLight;
 
-      if (hasPupil && hasContrast && hasLight) {
-        setAutoStatus('🎯 Iris detected! Capturing...');
+      if (irisReady) {
+        stableIrisFramesRef.current += 1;
+      } else {
+        stableIrisFramesRef.current = 0;
         window.clearTimeout(captureTimeoutRef.current);
-        captureTimeoutRef.current = window.setTimeout(() => takePhoto(), 300);
-      } else if (hasPupil && hasLight) {
-        setAutoStatus('👁️ Almost there... hold steady');
+        captureTimeoutRef.current = 0;
+      }
+
+      if (stableIrisFramesRef.current >= 8) {
+        setAutoStatus('🎯 Iris centered. Capturing...');
+        if (!captureTimeoutRef.current) {
+          captureTimeoutRef.current = window.setTimeout(() => {
+            captureTimeoutRef.current = 0;
+            takePhoto();
+          }, 250);
+        }
+      } else if (hasCenteredPupil && hasLight) {
+        setAutoStatus('👁️ Fill the circle with your iris');
       } else if (totalBrightness < 25) {
         setAutoStatus('💡 Need more light');
-      } else if (centerBrightness < 180) {
+      } else if (pupilBrightness < 160) {
         setAutoStatus('🔍 Move closer to your eye');
       } else {
         setAutoStatus('📷 Point camera at your eye');
@@ -215,8 +249,10 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
 
     return () => {
       active = false;
+      stableIrisFramesRef.current = 0;
       cancelAnimationFrame(animFrameRef.current);
       window.clearTimeout(captureTimeoutRef.current);
+      captureTimeoutRef.current = 0;
     };
   }, [cameraActive, autoMode, takePhoto]);
 
