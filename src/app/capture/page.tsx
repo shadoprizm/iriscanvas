@@ -6,7 +6,7 @@ import ImageUpload from '@/components/ImageUpload';
 import StyleSelector from '@/components/StyleSelector';
 import ArtDisplay from '@/components/ArtDisplay';
 import Footer from '@/components/Footer';
-import { analyzeIris, type IrisAnalysis } from '@/lib/irisAnalyzer';
+import { analyzeIris, cropToDetectedIris, type IrisAnalysis } from '@/lib/irisAnalyzer';
 
 type Step = 'capture' | 'style' | 'enhancing' | 'transforming' | 'result';
 
@@ -17,12 +17,13 @@ export default function CapturePage() {
   const [selectedStyle, setSelectedStyle] = useState<string | null>(null);
   const [generatedArt, setGeneratedArt] = useState<string | null>(null);
 
-  const handleCapture = (imageDataUrl: string) => {
-    setIrisImage(imageDataUrl);
+  const handleCapture = async (imageDataUrl: string) => {
+    const croppedIris = await cropToDetectedIris(imageDataUrl);
+    setIrisImage(croppedIris);
     setIrisAnalysis(null);
     setStep('style');
 
-    analyzeIris(imageDataUrl)
+    analyzeIris(croppedIris)
       .then(setIrisAnalysis)
       .catch((error) => console.error('Iris analysis failed:', error));
   };

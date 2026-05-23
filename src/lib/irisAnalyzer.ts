@@ -12,6 +12,149 @@ export interface IrisAnalysis {
   contrast: number;
 }
 
+type IrisCandidate = {
+  x: number;
+  y: number;
+  r: number;
+  score: number;
+};
+
+function isLikelySkin(r: number, g: number, b: number): boolean {
+  return r > 95 && g > 55 && b > 35 && r > g * 1.12 && g > b * 1.08;
+}
+
+function rgbToHex(r: number, g: number, b: number): string {
+  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+}
+
+function getPixel(data: Uint8ClampedArray, size: number, x: number, y: number) {
+  const idx = (y * size + x) * 4;
+  const r = data[idx];
+  const g = data[idx + 1];
+  const b = data[idx + 2];
+  const brightness = (r + g + b) / 3;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const saturation = max === 0 ? 0 : (max - min) / max;
+  return { r, g, b, brightness, saturation };
+}
+
+function findIrisCandidate(data: Uint8ClampedArray, size: number): IrisCandidate | null {
+  let best: IrisCandidate | null = null;
+  const radii = [18, 24, 32, 42, 54, 66];
+
+  for (const r of radii) {
+    for (let y = r + 8; y < size - r - 8; y += 4) {
+      for (let x = r + 8; x < size - r - 8; x += 4) {
+        const center = getPixel(data, size, x, y);
+        if (center.brightness > 105) continue;
+
+        let pupilBrightness = 0;
+        let pupilDark = 0;
+        let pupilCount = 0;
+        let irisBrightness = 0;
+        let irisSaturation = 0;
+        let irisColored = 0;
+        let irisSkin = 0;
+        let irisCount = 0;
+
+        for (let yy = y - r; yy <= y + r; yy += 4) {
+          for (let xx = x - r; xx <= x + r; xx += 4) {
+            const dx = xx - x;
+            const dy = yy - y;
+            const d = Math.sqrt(dx * dx + dy * dy);
+            const p = getPixel(data, size, xx, yy);
+
+            if (d <= r * 0.28) {
+              pupilBrightness += p.brightness;
+              pupilCount++;
+              if (p.brightness < 80) pupilDark++;
+            } else if (d >= r * 0.42 && d <= r * 0.95) {
+              irisBrightness += p.brightness;
+              irisSaturation += p.saturation;
+              irisCount++;
+              if (p.brightness > 24 && p.brightness < 220 && p.saturation > 0.06) irisColored++;
+              if (isLikelySkin(p.r, p.g, p.b)) irisSkin++;
+            }
+          }
+        }
+
+        if (!pupilCount || !irisCount) continue;
+
+        const pupilAvg = pupilBrightness / pupilCount;
+        const irisAvg = irisBrightness / irisCount;
+        const pupilDarkRatio = pupilDark / pupilCount;
+        const irisFillRatio = irisColored / irisCount;
+        const irisSat = irisSaturation / irisCount;
+        const skinRatio = irisSkin / irisCount;
+        const contrast = irisAvg - pupilAvg;
+
+        const score =
+          pupilDarkRatio * 2.6 +
+          irisFillRatio * 2.2 +
+          irisSat * 2.0 +
+          Math.max(0, Math.min(contrast / 70, 1.4)) -
+          skinRatio * 2.8 -
+          (pupilAvg > 85 ? 1.2 : 0);
+
+        if (score > 2.15 && (!best || score > best.score)) {
+          best = { x, y, r, score };
+        }
+      }
+    }
+  }
+
+  return best;
+}
+
+/**
+ * Finds the actual iris inside a broader eye photo and returns a square crop.
+ * This prevents skin, hair, shadows, and fingers from becoming the source palette.
+ */
+export async function cropToDetectedIris(imageDataUrl: string): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      const scanSize = 512;
+      const scanCanvas = document.createElement('canvas');
+      scanCanvas.width = scanSize;
+      scanCanvas.height = scanSize;
+      const scanCtx = scanCanvas.getContext('2d')!;
+
+      const minDim = Math.min(img.width, img.height);
+      const sx = (img.width - minDim) / 2;
+      const sy = (img.height - minDim) / 2;
+      scanCtx.drawImage(img, sx, sy, minDim, minDim, 0, 0, scanSize, scanSize);
+
+      const imageData = scanCtx.getImageData(0, 0, scanSize, scanSize);
+      const candidate = findIrisCandidate(imageData.data, scanSize);
+
+      const outputSize = 768;
+      const output = document.createElement('canvas');
+      output.width = outputSize;
+      output.height = outputSize;
+      const outCtx = output.getContext('2d')!;
+
+      if (candidate) {
+        const scale = minDim / scanSize;
+        const cropSide = Math.min(minDim, candidate.r * 3.2 * scale);
+        const cropX = sx + candidate.x * scale - cropSide / 2;
+        const cropY = sy + candidate.y * scale - cropSide / 2;
+        const clampedX = Math.max(0, Math.min(img.width - cropSide, cropX));
+        const clampedY = Math.max(0, Math.min(img.height - cropSide, cropY));
+        outCtx.drawImage(img, clampedX, clampedY, cropSide, cropSide, 0, 0, outputSize, outputSize);
+      } else {
+        outCtx.drawImage(img, sx, sy, minDim, minDim, 0, 0, outputSize, outputSize);
+      }
+
+      resolve(output.toDataURL('image/png'));
+    };
+    img.onerror = () => resolve(imageDataUrl);
+    img.src = imageDataUrl;
+  });
+}
+
 /**
  * Analyze an iris image and extract color/pattern data.
  * Works client-side using a hidden canvas.
@@ -62,8 +205,7 @@ export async function analyzeIris(imageDataUrl: string): Promise<IrisAnalysis> {
           const max = Math.max(r, g, b);
           const min = Math.min(r, g, b);
           if (max - min < 10) continue;
-          const likelySkin = r > 120 && g > 75 && b > 45 && r > g * 1.12 && g > b * 1.08;
-          if (likelySkin) continue;
+          if (isLikelySkin(r, g, b)) continue;
         
           totalR += r;
           totalG += g;
@@ -86,7 +228,7 @@ export async function analyzeIris(imageDataUrl: string): Promise<IrisAnalysis> {
         .slice(0, 10)
         .map(([key]) => {
           const [r, g, b] = key.split(',').map(Number);
-          return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+          return rgbToHex(r, g, b);
         });
 
       // Filter out very dark and very light colors for dominant
@@ -114,7 +256,7 @@ export async function analyzeIris(imageDataUrl: string): Promise<IrisAnalysis> {
       const patternIdx = Math.floor(avgBrightness / 64) % patterns.length;
 
       resolve({
-        dominantColors: dominantColors.length > 0 ? dominantColors : ['#6a1bff', '#3b0d99', '#9a5cff'],
+        dominantColors: dominantColors.length > 0 ? dominantColors : ['#1f3f66', '#456f96', '#7a8fa3'],
         accentColors,
         pattern: patterns[patternIdx],
         brightness: avgBrightness / 255,

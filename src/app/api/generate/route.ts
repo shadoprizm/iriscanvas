@@ -73,7 +73,9 @@ function buildColorAccuracyPrompt(analysis?: IrisAnalysis): string {
   const colors = analysis?.dominantColors?.filter(Boolean).slice(0, 5) || [];
   const palette = colors.length ? ` Source iris palette: ${colors.join(', ')}.` : '';
   return (
-    `${palette} Color accuracy is mandatory: preserve the actual source iris hues and relative color balance. ` +
+    `${palette} Color accuracy is mandatory: use only the supplied source iris palette and preserve the actual source iris hues and relative color balance. ` +
+    `Do not recolor the iris into purple, violet, magenta, pink, yellow, amber, gold, orange, copper, brown, or red unless that hue is clearly visible in the supplied iris photo and listed in the source palette. ` +
+    `Blue, gray, and blue-green eyes must stay blue/gray/blue-green; do not shift them toward violet or pink. ` +
     `Do not introduce yellow, amber, gold, orange, copper, or brown rings unless those hues are clearly visible in the supplied iris photo. ` +
     `If the source iris is blue, green, gray, or teal, keep the generated iris in that cool palette with only natural subtle variation. ` +
     `Do not add glare, catchlights, ring-light reflections, white shine spots, or glossy reflection artifacts. `
@@ -248,15 +250,10 @@ export async function POST(request: NextRequest) {
 
       let artUrl = await imageEdit(apiKey, enhancedBuffer, stylePrompt, MODEL, SIZE, QUALITY, TIMEOUT);
 
-      // Fallback: text-to-image
+      // Text-to-image fallbacks do not see the source photo and can invent the
+      // wrong iris colour. Prefer a deterministic palette fallback for previews.
       if (!artUrl) {
-        console.log('[transform] Edit failed, trying text-to-image...');
-        artUrl = await textToImage(apiKey, stylePrompt, MODEL, SIZE, QUALITY, TIMEOUT);
-      }
-      // Last resort for preview: dall-e-3
-      if (!artUrl && !isFinal) {
-        console.log('[transform] Trying dall-e-3 fallback...');
-        artUrl = await textToImage(apiKey, stylePrompt, 'dall-e-3', '1024x1024', 'standard', 45000);
+        console.log('[transform] Edit failed; skipping text-to-image fallback to preserve colour accuracy');
       }
 
       if (!artUrl) {

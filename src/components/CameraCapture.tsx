@@ -6,6 +6,113 @@ interface CameraCaptureProps {
   onCapture: (imageDataUrl: string) => void;
 }
 
+const GUIDE_CENTER_Y_RATIO = 0.25;
+const GUIDE_DIAMETER_RATIO = 0.34;
+const GUIDE_OUTPUT_SIZE = 768;
+
+type GuideRect = {
+  sx: number;
+  sy: number;
+  size: number;
+};
+
+type IrisGuideScore = {
+  ready: boolean;
+  hasCenteredPupil: boolean;
+  irisFillsTarget: boolean;
+  hasIrisContrast: boolean;
+  hasLight: boolean;
+};
+
+function getGuideRect(video: HTMLVideoElement): GuideRect {
+  const guideSize = Math.round(Math.min(video.videoWidth, video.videoHeight) * GUIDE_DIAMETER_RATIO);
+  const cx = video.videoWidth / 2;
+  const cy = video.videoHeight * GUIDE_CENTER_Y_RATIO;
+  const size = Math.max(120, guideSize);
+  const sx = Math.max(0, Math.min(video.videoWidth - size, Math.round(cx - size / 2)));
+  const sy = Math.max(0, Math.min(video.videoHeight - size, Math.round(cy - size / 2)));
+
+  return { sx, sy, size };
+}
+
+function scoreIrisGuide(pixels: Uint8ClampedArray, size: number): IrisGuideScore {
+  let pupilBrightness = 0;
+  let pupilDarkPixels = 0;
+  let pupilPixels = 0;
+  let irisBrightness = 0;
+  let irisSaturation = 0;
+  let irisCandidatePixels = 0;
+  let irisPixels = 0;
+  let outerBrightness = 0;
+  let outerPixels = 0;
+  let sectorFillMask = 0;
+  let totalBrightness = 0;
+  let totalSamples = 0;
+
+  for (let y = 0; y < size; y += 2) {
+    for (let x = 0; x < size; x += 2) {
+      const dx = x - size / 2;
+      const dy = y - size / 2;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const idx = (y * size + x) * 4;
+      const r = pixels[idx], g = pixels[idx + 1], b = pixels[idx + 2];
+      const brightness = (r + g + b) / 3;
+      const max = Math.max(r, g, b), min = Math.min(r, g, b);
+      const saturation = max === 0 ? 0 : (max - min) / max;
+      const normalizedDist = dist / (size / 2);
+
+      totalBrightness += brightness;
+      totalSamples++;
+
+      if (normalizedDist <= 0.30) {
+        pupilBrightness += brightness;
+        pupilPixels++;
+        if (brightness < 70) pupilDarkPixels++;
+      } else if (normalizedDist >= 0.43 && normalizedDist <= 0.86) {
+        irisBrightness += brightness;
+        irisSaturation += saturation;
+        irisPixels++;
+
+        const isIrisLike = brightness > 38 && brightness < 205 && saturation > 0.10;
+        if (isIrisLike) {
+          irisCandidatePixels++;
+          const angle = Math.atan2(dy, dx) + Math.PI;
+          const sector = Math.min(15, Math.floor((angle / (Math.PI * 2)) * 16));
+          sectorFillMask |= (1 << sector);
+        }
+      } else if (normalizedDist >= 0.88 && normalizedDist <= 0.98) {
+        outerBrightness += brightness;
+        outerPixels++;
+      }
+    }
+  }
+
+  pupilBrightness /= (pupilPixels || 1);
+  irisBrightness /= (irisPixels || 1);
+  irisSaturation /= (irisPixels || 1);
+  outerBrightness /= (outerPixels || 1);
+  totalBrightness /= (totalSamples || 1);
+
+  const pupilDarkRatio = pupilDarkPixels / (pupilPixels || 1);
+  const irisFillRatio = irisCandidatePixels / (irisPixels || 1);
+  const pupilToIrisContrast = irisBrightness - pupilBrightness;
+  const limbalContrast = Math.abs(outerBrightness - irisBrightness);
+  const filledSectors = sectorFillMask.toString(2).replace(/0/g, '').length;
+
+  const hasCenteredPupil = pupilBrightness < 82 && pupilDarkRatio > 0.52 && pupilDarkRatio < 0.88;
+  const irisFillsTarget = irisFillRatio > 0.52 && irisSaturation > 0.12 && filledSectors >= 13;
+  const hasIrisContrast = pupilToIrisContrast > 38 && limbalContrast > 12;
+  const hasLight = totalBrightness > 45 && totalBrightness < 205;
+
+  return {
+    ready: hasCenteredPupil && irisFillsTarget && hasIrisContrast && hasLight,
+    hasCenteredPupil,
+    irisFillsTarget,
+    hasIrisContrast,
+    hasLight,
+  };
+}
+
 export default function CameraCapture({ onCapture }: CameraCaptureProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -84,10 +191,21 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
     const c = canvasRef.current;
     if (!v || !c || v.videoWidth === 0) { capturedRef.current = false; return; }
 
-    c.width = v.videoWidth;
-    c.height = v.videoHeight;
-    c.getContext('2d')!.drawImage(v, 0, 0);
-    const data = c.toDataURL('image/jpeg', 0.92);
+    const guide = getGuideRect(v);
+    c.width = GUIDE_OUTPUT_SIZE;
+    c.height = GUIDE_OUTPUT_SIZE;
+    c.getContext('2d')!.drawImage(
+      v,
+      guide.sx,
+      guide.sy,
+      guide.size,
+      guide.size,
+      0,
+      0,
+      GUIDE_OUTPUT_SIZE,
+      GUIDE_OUTPUT_SIZE
+    );
+    const data = c.toDataURL('image/jpeg', 0.94);
 
     (v.srcObject as MediaStream)?.getTracks().forEach(t => t.stop());
     v.srcObject = null;
@@ -140,83 +258,18 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
         return;
       }
 
-      // Analyze region matching the overlay position (upper quarter of frame)
-      const size = 120;
-      const cx = Math.floor(v.videoWidth / 2 - size / 2);
-      // Sample from upper area (25% mark) to match the overlay
-      const cy = Math.floor(v.videoHeight * 0.25 - size / 2);
+      const guide = getGuideRect(v);
+      const size = 160;
 
       c.width = size;
       c.height = size;
       const ctx = c.getContext('2d')!;
-      ctx.drawImage(v, cx, cy, size, size, 0, 0, size, size);
+      ctx.drawImage(v, guide.sx, guide.sy, guide.size, guide.size, 0, 0, size, size);
 
       const imageData = ctx.getImageData(0, 0, size, size);
-      const pixels = imageData.data;
+      const irisScore = scoreIrisGuide(imageData.data, size);
 
-      // Score the target for an eye-like structure: a centered dark pupil with
-      // an iris annulus filling most of the guide circle.
-      let pupilBrightness = 0;
-      let pupilDarkPixels = 0;
-      let pupilPixels = 0;
-      let irisBrightness = 0;
-      let irisSaturation = 0;
-      let irisCandidatePixels = 0;
-      let irisPixels = 0;
-      let outerBrightness = 0;
-      let outerPixels = 0;
-
-      for (let y = 0; y < size; y += 2) {
-        for (let x = 0; x < size; x += 2) {
-          const dx = x - size / 2;
-          const dy = y - size / 2;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-          const idx = (y * size + x) * 4;
-          const r = pixels[idx], g = pixels[idx + 1], b = pixels[idx + 2];
-          const brightness = (r + g + b) / 3;
-          const max = Math.max(r, g, b), min = Math.min(r, g, b);
-          const saturation = max === 0 ? 0 : (max - min) / max;
-
-          if (dist <= 18) {
-            pupilBrightness += brightness;
-            pupilPixels++;
-            if (brightness < 80) pupilDarkPixels++;
-          } else if (dist >= 30 && dist <= 54) {
-            irisBrightness += brightness;
-            irisSaturation += saturation;
-            irisPixels++;
-            if (brightness > 35 && brightness < 215 && saturation > 0.07) irisCandidatePixels++;
-          } else if (dist >= 56 && dist <= 60) {
-            outerBrightness += brightness;
-            outerPixels++;
-          }
-        }
-      }
-
-      pupilBrightness /= (pupilPixels || 1);
-      irisBrightness /= (irisPixels || 1);
-      irisSaturation /= (irisPixels || 1);
-      outerBrightness /= (outerPixels || 1);
-
-      // Full region brightness (lighting check)
-      let totalBrightness = 0;
-      for (let i = 0; i < pixels.length; i += 16) {
-        totalBrightness += (pixels[i] + pixels[i+1] + pixels[i+2]) / 3;
-      }
-      totalBrightness /= (pixels.length / 16);
-
-      const pupilDarkRatio = pupilDarkPixels / (pupilPixels || 1);
-      const irisFillRatio = irisCandidatePixels / (irisPixels || 1);
-      const pupilToIrisContrast = irisBrightness - pupilBrightness;
-      const limbalContrast = Math.abs(outerBrightness - irisBrightness);
-
-      const hasCenteredPupil = pupilBrightness < 90 && pupilDarkRatio > 0.45 && pupilDarkRatio < 0.95;
-      const irisFillsTarget = irisFillRatio > 0.38 && irisSaturation > 0.09;
-      const hasIrisContrast = pupilToIrisContrast > 32 && limbalContrast > 8;
-      const hasLight = totalBrightness > 35 && totalBrightness < 220;
-      const irisReady = hasCenteredPupil && irisFillsTarget && hasIrisContrast && hasLight;
-
-      if (irisReady) {
+      if (irisScore.ready) {
         stableIrisFramesRef.current += 1;
       } else {
         stableIrisFramesRef.current = 0;
@@ -224,7 +277,7 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
         captureTimeoutRef.current = 0;
       }
 
-      if (stableIrisFramesRef.current >= 8) {
+      if (stableIrisFramesRef.current >= 12) {
         setAutoStatus('🎯 Iris centered. Capturing...');
         if (!captureTimeoutRef.current) {
           captureTimeoutRef.current = window.setTimeout(() => {
@@ -232,11 +285,11 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
             takePhoto();
           }, 250);
         }
-      } else if (hasCenteredPupil && hasLight) {
+      } else if (irisScore.hasCenteredPupil && irisScore.hasLight && !irisScore.irisFillsTarget) {
         setAutoStatus('👁️ Fill the circle with your iris');
-      } else if (totalBrightness < 25) {
+      } else if (!irisScore.hasLight) {
         setAutoStatus('💡 Need more light');
-      } else if (pupilBrightness < 160) {
+      } else if (irisScore.hasCenteredPupil && !irisScore.hasIrisContrast) {
         setAutoStatus('🔍 Move closer to your eye');
       } else {
         setAutoStatus('📷 Point camera at your eye');
@@ -278,31 +331,31 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
             }}
           />
 
-          {/* Iris target overlay - positioned higher on mobile to match camera */}
-          {autoMode && (
+          {/* Iris target overlay - same capture target in auto and manual */}
+          <div style={{
+            position: 'absolute',
+            top: `${GUIDE_CENTER_Y_RATIO * 100}%`,
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            width: '34%',
+            maxWidth: '170px',
+            minWidth: '132px',
+            aspectRatio: '1 / 1',
+            borderRadius: '50%',
+            border: '3px dashed rgba(106, 27, 255, 0.8)',
+            boxShadow: '0 0 30px rgba(106, 27, 255, 0.3)',
+            pointerEvents: 'none',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}>
             <div style={{
-              position: 'absolute',
-              top: '25%',
-              left: '50%',
-              transform: 'translate(-50%, -50%)',
-              width: '140px',
-              height: '140px',
+              width: '43%',
+              aspectRatio: '1 / 1',
               borderRadius: '50%',
-              border: '3px dashed rgba(106, 27, 255, 0.8)',
-              boxShadow: '0 0 30px rgba(106, 27, 255, 0.3)',
-              pointerEvents: 'none',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}>
-              <div style={{
-                width: '60px',
-                height: '60px',
-                borderRadius: '50%',
-                border: '2px solid rgba(255, 106, 179, 0.6)',
-              }} />
-            </div>
-          )}
+              border: '2px solid rgba(255, 106, 179, 0.6)',
+            }} />
+          </div>
 
           {/* Auto-status text */}
           {autoMode && autoStatus && (
@@ -355,7 +408,7 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
         <p style={{ color: '#6b7280', fontSize: '11px', marginTop: '12px', lineHeight: 1.4 }}>
           {autoMode
             ? 'Position your eye in the circle. Good lighting helps. AI will enhance the result.'
-            : 'Tap Capture when your eye is centered'}
+            : 'Fill the circle with your iris, then tap Capture'}
         </p>
       </div>
 
@@ -365,7 +418,7 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
           <div style={{ fontSize: '48px', marginBottom: '16px' }}>📷</div>
           <p style={{ color: '#999', marginBottom: '8px' }}>Take a close-up photo of your eye</p>
           <p style={{ color: '#6b7280', fontSize: '12px', marginBottom: '24px' }}>
-            {autoMode ? 'Auto-mode: just hold your eye steady in the target circle' : 'Manual mode: tap capture when ready'}
+            {autoMode ? 'Auto-mode: just hold your eye steady in the target circle' : 'Manual mode: fill the target circle, then tap capture'}
           </p>
           <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap' }}>
             <button onClick={openCamera} style={captureBtnStyle}>Open Camera</button>
