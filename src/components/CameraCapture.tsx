@@ -25,6 +25,19 @@ type IrisGuideScore = {
   hasLight: boolean;
 };
 
+type CameraCapabilities = MediaTrackCapabilities & {
+  torch?: boolean;
+  zoom?: {
+    min: number;
+    max: number;
+    step?: number;
+  };
+};
+
+type CameraSettings = MediaTrackSettings & {
+  zoom?: number;
+};
+
 function getGuideRect(video: HTMLVideoElement): GuideRect {
   const guideSize = Math.round(Math.min(video.videoWidth, video.videoHeight) * GUIDE_DIAMETER_RATIO);
   const cx = video.videoWidth / 2;
@@ -124,6 +137,13 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
   const [autoArmed, setAutoArmed] = useState(false);
   const [autoCountdown, setAutoCountdown] = useState(0);
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
+  const [zoomSupported, setZoomSupported] = useState(false);
+  const [zoomMin, setZoomMin] = useState(1);
+  const [zoomMax, setZoomMax] = useState(1);
+  const [zoomStep, setZoomStep] = useState(0.1);
+  const [zoomValue, setZoomValue] = useState(1);
+  const [torchSupported, setTorchSupported] = useState(false);
+  const [torchOn, setTorchOn] = useState(false);
   const animFrameRef = useRef<number>(0);
   const capturedRef = useRef(false);
   const captureTimeoutRef = useRef<number>(0);
@@ -179,6 +199,29 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
       setAutoArmed(false);
       setAutoCountdown(0);
       setAutoStatus(autoMode ? 'Line up your iris, then tap Ready' : '');
+
+      const track = stream.getVideoTracks()[0];
+      const capabilities = track?.getCapabilities?.() as CameraCapabilities | undefined;
+      const settings = track?.getSettings?.() as CameraSettings | undefined;
+      const zoom = capabilities?.zoom;
+
+      setTorchSupported(Boolean(capabilities?.torch));
+      setTorchOn(false);
+
+      if (zoom && Number.isFinite(zoom.min) && Number.isFinite(zoom.max) && zoom.max > zoom.min) {
+        const nextZoom = Math.max(zoom.min, Math.min(zoom.max, settings?.zoom ?? zoom.min));
+        setZoomSupported(true);
+        setZoomMin(zoom.min);
+        setZoomMax(zoom.max);
+        setZoomStep(zoom.step || 0.1);
+        setZoomValue(nextZoom);
+      } else {
+        setZoomSupported(false);
+        setZoomMin(1);
+        setZoomMax(1);
+        setZoomStep(0.1);
+        setZoomValue(1);
+      }
     } catch (e: any) {
       setErrorMsg(e.name === 'NotAllowedError'
         ? 'Please allow camera access and reload'
@@ -199,6 +242,7 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
     countdownIntervalRef.current = 0;
     setAutoArmed(false);
     setAutoCountdown(0);
+    setTorchOn(false);
 
     const v = videoRef.current;
     const c = canvasRef.current;
@@ -224,6 +268,7 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
     v.srcObject = null;
     setCameraActive(false);
     setAutoStatus('');
+    setTorchOn(false);
     onCapture(data);
   }, [onCapture]);
 
@@ -242,6 +287,7 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
     setAutoStatus('');
     setAutoArmed(false);
     setAutoCountdown(0);
+    setTorchOn(false);
     stableIrisFramesRef.current = 0;
   }, []);
 
@@ -259,6 +305,7 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
     setCameraActive(false);
     setAutoArmed(false);
     setAutoCountdown(0);
+    setTorchOn(false);
     stableIrisFramesRef.current = 0;
     const next = facingMode === 'environment' ? 'user' : 'environment';
     setFacingMode(next);
@@ -306,6 +353,32 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
       setAutoStatus(`Hold steady. Auto starts in ${remaining}...`);
     }, 1000);
   }, [autoArmed, autoCountdown, autoMode, cameraActive]);
+
+  const applyCameraConstraint = useCallback(async (constraint: MediaTrackConstraintSet) => {
+    const stream = videoRef.current?.srcObject as MediaStream | null;
+    const track = stream?.getVideoTracks()[0];
+    if (!track) return false;
+
+    try {
+      await track.applyConstraints({ advanced: [constraint] });
+      return true;
+    } catch (error) {
+      console.warn('Camera constraint failed:', error);
+      return false;
+    }
+  }, []);
+
+  const handleZoomChange = useCallback(async (nextZoom: number) => {
+    const clampedZoom = Math.max(zoomMin, Math.min(zoomMax, nextZoom));
+    setZoomValue(clampedZoom);
+    await applyCameraConstraint({ zoom: clampedZoom } as MediaTrackConstraintSet);
+  }, [applyCameraConstraint, zoomMax, zoomMin]);
+
+  const handleTorchToggle = useCallback(async () => {
+    const nextTorch = !torchOn;
+    const applied = await applyCameraConstraint({ torch: nextTorch } as MediaTrackConstraintSet);
+    if (applied) setTorchOn(nextTorch);
+  }, [applyCameraConstraint, torchOn]);
 
   // Auto-detect iris loop
   useEffect(() => {
@@ -466,7 +539,44 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
             {autoMode ? '🖐️ Manual' : '🤖 Auto'}
           </button>
           <button onClick={handleFlip} style={smallBtnStyle}>🔄</button>
+          {torchSupported && (
+            <button onClick={handleTorchToggle} style={smallBtnStyle}>
+              {torchOn ? '🔦 Off' : '🔦 Flash'}
+            </button>
+          )}
         </div>
+
+        {zoomSupported && (
+          <div style={{
+            maxWidth: '360px',
+            margin: '14px auto 0',
+            padding: '10px 14px',
+            borderRadius: '14px',
+            background: 'rgba(255,255,255,0.05)',
+            border: '1px solid rgba(255,255,255,0.12)',
+          }}>
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              color: '#9ca3af',
+              fontSize: '12px',
+              marginBottom: '8px',
+            }}>
+              <span>Zoom</span>
+              <span>{zoomValue.toFixed(zoomStep >= 1 ? 0 : 1)}x</span>
+            </div>
+            <input
+              type="range"
+              min={zoomMin}
+              max={zoomMax}
+              step={zoomStep}
+              value={zoomValue}
+              onChange={(event) => handleZoomChange(Number(event.target.value))}
+              style={{ width: '100%', accentColor: '#9a5cff' }}
+            />
+          </div>
+        )}
 
         {/* Tip */}
         <p style={{ color: '#6b7280', fontSize: '11px', marginTop: '12px', lineHeight: 1.4 }}>
