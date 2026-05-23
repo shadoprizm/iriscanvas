@@ -70,7 +70,7 @@ const STYLE_PROMPTS: Record<string, string> = {
     `Enhance every iris fiber, crypt, furrow, and collarette to medical-grade clarity and sharpness. ` +
     `Deepen the limbal ring to a rich dark border. Make the pupil perfectly circular and absolute black. ` +
     `Intensify the natural iris colors to be vivid and luminous — amber becomes molten gold, blue becomes electric sapphire, ` +
-    `green becomes emerald. Add professional ring-light reflection highlights. ` +
+    `green becomes emerald. Remove glare, catchlights, ring-light reflections, white shine spots, and any synthetic reflection artifacts. ` +
     `The result should look like it was shot with a $5000 macro lens and professional studio lighting. ` +
     `Gallery-quality, suitable for 30x30 inch metal print. No text, no watermarks.`,
 };
@@ -81,7 +81,8 @@ const ENHANCE_PROMPT =
   `and skin. Sharpen the iris fibers, collarette, and crypt details to medical-grade clarity. ` +
   `Deepen the limbal ring. Make the pupil perfectly circular and absolute black. ` +
   `Enhance the natural iris colors to be vivid and luminous while remaining realistic. ` +
-  `Professional lighting with subtle highlights on the iris texture. ` +
+  `Remove glare, catchlights, ring-light reflections, white shine spots, and any synthetic reflection artifacts. ` +
+  `Use clean, even macro lighting that reveals the iris texture without adding reflective marks. ` +
   `Output as a centered, circular iris on solid black background. Ultra high quality. No text.`;
 
 /**

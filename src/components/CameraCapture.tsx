@@ -14,14 +14,15 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
   const [autoMode, setAutoMode] = useState(true);
   const [autoStatus, setAutoStatus] = useState('');
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
-  const autoDetectRef = useRef(false);
   const animFrameRef = useRef<number>(0);
   const capturedRef = useRef(false);
+  const captureTimeoutRef = useRef<number>(0);
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
       cancelAnimationFrame(animFrameRef.current);
+      window.clearTimeout(captureTimeoutRef.current);
       const v = videoRef.current;
       if (v?.srcObject) {
         (v.srcObject as MediaStream).getTracks().forEach(t => t.stop());
@@ -72,6 +73,7 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
     if (capturedRef.current) return;
     capturedRef.current = true;
     cancelAnimationFrame(animFrameRef.current);
+    window.clearTimeout(captureTimeoutRef.current);
 
     const v = videoRef.current;
     const c = canvasRef.current;
@@ -91,6 +93,7 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
 
   const closeCamera = useCallback(() => {
     cancelAnimationFrame(animFrameRef.current);
+    window.clearTimeout(captureTimeoutRef.current);
     const v = videoRef.current;
     if (v?.srcObject) {
       (v.srcObject as MediaStream).getTracks().forEach(t => t.stop());
@@ -102,6 +105,7 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
 
   const handleFlip = useCallback(async () => {
     cancelAnimationFrame(animFrameRef.current);
+    window.clearTimeout(captureTimeoutRef.current);
     const v = videoRef.current;
     if (v?.srcObject) {
       (v.srcObject as MediaStream).getTracks().forEach(t => t.stop());
@@ -115,9 +119,11 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
 
   // Auto-detect iris loop
   useEffect(() => {
-    if (!cameraActive || !autoMode || !autoDetectRef.current) return;
+    if (!cameraActive || !autoMode) return;
+    let active = true;
 
     const detect = () => {
+      if (!active || capturedRef.current) return;
       const v = videoRef.current;
       const c = canvasRef.current;
       if (!v || !c || v.videoWidth === 0 || v.readyState < 2) {
@@ -190,7 +196,8 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
 
       if (hasPupil && hasContrast && hasLight) {
         setAutoStatus('🎯 Iris detected! Capturing...');
-        setTimeout(() => takePhoto(), 300);
+        window.clearTimeout(captureTimeoutRef.current);
+        captureTimeoutRef.current = window.setTimeout(() => takePhoto(), 300);
       } else if (hasPupil && hasLight) {
         setAutoStatus('👁️ Almost there... hold steady');
       } else if (totalBrightness < 25) {
@@ -204,11 +211,12 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
       animFrameRef.current = requestAnimationFrame(detect);
     };
 
-    autoDetectRef.current = true;
     animFrameRef.current = requestAnimationFrame(detect);
 
     return () => {
+      active = false;
       cancelAnimationFrame(animFrameRef.current);
+      window.clearTimeout(captureTimeoutRef.current);
     };
   }, [cameraActive, autoMode, takePhoto]);
 

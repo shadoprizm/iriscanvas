@@ -16,7 +16,8 @@ const ENHANCE_PROMPT =
   `and skin. Sharpen the iris fibers, collarette, and crypt details to medical-grade clarity. ` +
   `Deepen the limbal ring. Make the pupil perfectly circular and absolute black. ` +
   `Enhance the natural iris colors to be vivid and luminous while remaining realistic. ` +
-  `Professional lighting with subtle highlights on the iris texture. ` +
+  `Remove glare, catchlights, ring-light reflections, white shine spots, and any synthetic reflection artifacts. ` +
+  `Use clean, even macro lighting that reveals the iris texture without adding reflective marks. ` +
   `Output as a centered, circular iris on solid black background. No text.`;
 
 const STYLE_PROMPTS: Record<string, string> = {
@@ -24,7 +25,8 @@ const STYLE_PROMPTS: Record<string, string> = {
     `Create a flawless professional macro photography portrait of a human iris on a pure deep black background. ` +
     `Zero eyelid, eyelash, or skin visible. Enhance every iris fiber, crypt, furrow, and collarette to medical-grade clarity. ` +
     `Deepen the limbal ring to a rich dark border. Make the pupil perfectly circular and absolute black. ` +
-    `Preserve the source iris color palette exactly while making the visible colors vivid and luminous. Professional ring-light reflection highlights. ` +
+    `Preserve the source iris color palette exactly while making the visible colors vivid and luminous. ` +
+    `Remove glare, catchlights, ring-light reflections, white shine spots, and any synthetic reflection artifacts. ` +
     `Shot with a $5000 macro lens and professional studio lighting. Gallery-quality for 30x30 inch metal print. No text.`,
   cosmic:
     `Transform a human iris into a breathtaking deep space nebula artwork on a pure black void. ` +
@@ -73,7 +75,8 @@ function buildColorAccuracyPrompt(analysis?: IrisAnalysis): string {
   return (
     `${palette} Color accuracy is mandatory: preserve the actual source iris hues and relative color balance. ` +
     `Do not introduce yellow, amber, gold, orange, copper, or brown rings unless those hues are clearly visible in the supplied iris photo. ` +
-    `If the source iris is blue, green, gray, or teal, keep the generated iris in that cool palette with only natural subtle variation. `
+    `If the source iris is blue, green, gray, or teal, keep the generated iris in that cool palette with only natural subtle variation. ` +
+    `Do not add glare, catchlights, ring-light reflections, white shine spots, or glossy reflection artifacts. `
   );
 }
 
