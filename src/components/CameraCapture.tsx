@@ -8,7 +8,7 @@ interface CameraCaptureProps {
 
 const GUIDE_CENTER_Y_RATIO = 0.25;
 const GUIDE_DIAMETER_RATIO = 0.34;
-const GUIDE_OUTPUT_SIZE = 768;
+const GUIDE_OUTPUT_SIZE = 1536;
 const AUTO_ARM_SECONDS = 3;
 
 type GuideRect = {
@@ -46,6 +46,11 @@ type CameraSettings = MediaTrackSettings & {
   zoom?: number;
 };
 
+type ImageCaptureConstructor = new (track: MediaStreamTrack) => {
+  takePhoto?: () => Promise<Blob>;
+  grabFrame?: () => Promise<ImageBitmap>;
+};
+
 function getGuideRect(video: HTMLVideoElement): GuideRect {
   const guideSize = Math.round(Math.min(video.videoWidth, video.videoHeight) * GUIDE_DIAMETER_RATIO);
   const cx = video.videoWidth / 2;
@@ -55,6 +60,33 @@ function getGuideRect(video: HTMLVideoElement): GuideRect {
   const sy = Math.max(0, Math.min(video.videoHeight - size, Math.round(cy - size / 2)));
 
   return { sx, sy, size };
+}
+
+function getImageGuideRect(width: number, height: number): GuideRect {
+  const guideSize = Math.round(Math.min(width, height) * GUIDE_DIAMETER_RATIO);
+  const cx = width / 2;
+  const cy = height * GUIDE_CENTER_Y_RATIO;
+  const size = Math.max(120, guideSize);
+  const sx = Math.max(0, Math.min(width - size, Math.round(cx - size / 2)));
+  const sy = Math.max(0, Math.min(height - size, Math.round(cy - size / 2)));
+
+  return { sx, sy, size };
+}
+
+function loadImageFromBlob(blob: Blob): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Photo decode failed'));
+    };
+    image.src = url;
+  });
 }
 
 function scoreIrisGuide(pixels: Uint8ClampedArray, size: number): IrisGuideScore {
@@ -189,7 +221,12 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
       }
 
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: {
+          facingMode: facing,
+          width: { ideal: 3840 },
+          height: { ideal: 2160 },
+          aspectRatio: { ideal: 16 / 9 },
+        },
         audio: false,
       });
 
@@ -266,7 +303,7 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
 
   const openCamera = useCallback(() => startStream(facingMode), [startStream, facingMode]);
 
-  const takePhoto = useCallback(() => {
+  const takePhoto = useCallback(async () => {
     if (capturedRef.current) return;
     capturedRef.current = true;
     stableIrisFramesRef.current = 0;
@@ -283,21 +320,74 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
     const c = canvasRef.current;
     if (!v || !c || v.videoWidth === 0) { capturedRef.current = false; return; }
 
-    const guide = getGuideRect(v);
+    const ctx = c.getContext('2d')!;
     c.width = GUIDE_OUTPUT_SIZE;
     c.height = GUIDE_OUTPUT_SIZE;
-    c.getContext('2d')!.drawImage(
-      v,
-      guide.sx,
-      guide.sy,
-      guide.size,
-      guide.size,
-      0,
-      0,
-      GUIDE_OUTPUT_SIZE,
-      GUIDE_OUTPUT_SIZE
-    );
-    const data = c.toDataURL('image/jpeg', 0.94);
+
+    let usedHighResolutionStill = false;
+    const stream = v.srcObject as MediaStream | null;
+    const track = stream?.getVideoTracks()[0];
+    const ImageCaptureApi = typeof window !== 'undefined'
+      ? (window as unknown as { ImageCapture?: ImageCaptureConstructor }).ImageCapture
+      : undefined;
+
+    if (track && ImageCaptureApi) {
+      try {
+        const capture = new ImageCaptureApi(track);
+        if (capture.takePhoto) {
+          const photoBlob = await capture.takePhoto();
+          const photo = await loadImageFromBlob(photoBlob);
+          const guide = getImageGuideRect(photo.naturalWidth || photo.width, photo.naturalHeight || photo.height);
+          ctx.drawImage(
+            photo,
+            guide.sx,
+            guide.sy,
+            guide.size,
+            guide.size,
+            0,
+            0,
+            GUIDE_OUTPUT_SIZE,
+            GUIDE_OUTPUT_SIZE
+          );
+          usedHighResolutionStill = true;
+        } else if (capture.grabFrame) {
+          const frame = await capture.grabFrame();
+          const guide = getImageGuideRect(frame.width, frame.height);
+          ctx.drawImage(
+            frame,
+            guide.sx,
+            guide.sy,
+            guide.size,
+            guide.size,
+            0,
+            0,
+            GUIDE_OUTPUT_SIZE,
+            GUIDE_OUTPUT_SIZE
+          );
+          frame.close?.();
+          usedHighResolutionStill = true;
+        }
+      } catch (error) {
+        console.warn('High-resolution still capture failed, falling back to video frame:', error);
+      }
+    }
+
+    if (!usedHighResolutionStill) {
+      const guide = getGuideRect(v);
+      ctx.drawImage(
+        v,
+        guide.sx,
+        guide.sy,
+        guide.size,
+        guide.size,
+        0,
+        0,
+        GUIDE_OUTPUT_SIZE,
+        GUIDE_OUTPUT_SIZE
+      );
+    }
+
+    const data = c.toDataURL('image/png');
 
     (v.srcObject as MediaStream)?.getTracks().forEach(t => t.stop());
     v.srcObject = null;

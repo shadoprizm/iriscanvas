@@ -130,7 +130,7 @@ export async function cropToDetectedIris(imageDataUrl: string): Promise<string> 
       const imageData = scanCtx.getImageData(0, 0, scanSize, scanSize);
       const candidate = findIrisCandidate(imageData.data, scanSize);
 
-      const outputSize = 768;
+      const outputSize = 1536;
       const output = document.createElement('canvas');
       output.width = outputSize;
       output.height = outputSize;
