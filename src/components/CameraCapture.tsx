@@ -9,6 +9,7 @@ interface CameraCaptureProps {
 const GUIDE_CENTER_Y_RATIO = 0.25;
 const GUIDE_DIAMETER_RATIO = 0.34;
 const GUIDE_OUTPUT_SIZE = 768;
+const AUTO_ARM_SECONDS = 3;
 
 type GuideRect = {
   sx: number;
@@ -120,10 +121,13 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
   const [errorMsg, setErrorMsg] = useState('');
   const [autoMode, setAutoMode] = useState(true);
   const [autoStatus, setAutoStatus] = useState('');
+  const [autoArmed, setAutoArmed] = useState(false);
+  const [autoCountdown, setAutoCountdown] = useState(0);
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
   const animFrameRef = useRef<number>(0);
   const capturedRef = useRef(false);
   const captureTimeoutRef = useRef<number>(0);
+  const countdownIntervalRef = useRef<number>(0);
   const stableIrisFramesRef = useRef(0);
 
   // Cleanup on unmount
@@ -131,7 +135,9 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
     return () => {
       cancelAnimationFrame(animFrameRef.current);
       window.clearTimeout(captureTimeoutRef.current);
+      window.clearInterval(countdownIntervalRef.current);
       captureTimeoutRef.current = 0;
+      countdownIntervalRef.current = 0;
       const v = videoRef.current;
       if (v?.srcObject) {
         (v.srcObject as MediaStream).getTracks().forEach(t => t.stop());
@@ -170,12 +176,15 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
       setCameraActive(true);
       capturedRef.current = false;
       stableIrisFramesRef.current = 0;
+      setAutoArmed(false);
+      setAutoCountdown(0);
+      setAutoStatus(autoMode ? 'Line up your iris, then tap Ready' : '');
     } catch (e: any) {
       setErrorMsg(e.name === 'NotAllowedError'
         ? 'Please allow camera access and reload'
         : 'Camera not available — try uploading a photo');
     }
-  }, []);
+  }, [autoMode]);
 
   const openCamera = useCallback(() => startStream(facingMode), [startStream, facingMode]);
 
@@ -185,7 +194,11 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
     stableIrisFramesRef.current = 0;
     cancelAnimationFrame(animFrameRef.current);
     window.clearTimeout(captureTimeoutRef.current);
+    window.clearInterval(countdownIntervalRef.current);
     captureTimeoutRef.current = 0;
+    countdownIntervalRef.current = 0;
+    setAutoArmed(false);
+    setAutoCountdown(0);
 
     const v = videoRef.current;
     const c = canvasRef.current;
@@ -217,7 +230,9 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
   const closeCamera = useCallback(() => {
     cancelAnimationFrame(animFrameRef.current);
     window.clearTimeout(captureTimeoutRef.current);
+    window.clearInterval(countdownIntervalRef.current);
     captureTimeoutRef.current = 0;
+    countdownIntervalRef.current = 0;
     const v = videoRef.current;
     if (v?.srcObject) {
       (v.srcObject as MediaStream).getTracks().forEach(t => t.stop());
@@ -225,28 +240,76 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
     }
     setCameraActive(false);
     setAutoStatus('');
+    setAutoArmed(false);
+    setAutoCountdown(0);
     stableIrisFramesRef.current = 0;
   }, []);
 
   const handleFlip = useCallback(async () => {
     cancelAnimationFrame(animFrameRef.current);
     window.clearTimeout(captureTimeoutRef.current);
+    window.clearInterval(countdownIntervalRef.current);
     captureTimeoutRef.current = 0;
+    countdownIntervalRef.current = 0;
     const v = videoRef.current;
     if (v?.srcObject) {
       (v.srcObject as MediaStream).getTracks().forEach(t => t.stop());
       v.srcObject = null;
     }
     setCameraActive(false);
+    setAutoArmed(false);
+    setAutoCountdown(0);
     stableIrisFramesRef.current = 0;
     const next = facingMode === 'environment' ? 'user' : 'environment';
     setFacingMode(next);
     setTimeout(() => startStream(next), 300);
   }, [facingMode, startStream]);
 
+  const handleToggleAutoMode = useCallback(() => {
+    const nextAutoMode = !autoMode;
+    setAutoMode(nextAutoMode);
+    setAutoArmed(false);
+    setAutoCountdown(0);
+    setAutoStatus(nextAutoMode && cameraActive ? 'Line up your iris, then tap Ready' : '');
+    stableIrisFramesRef.current = 0;
+    window.clearTimeout(captureTimeoutRef.current);
+    window.clearInterval(countdownIntervalRef.current);
+    captureTimeoutRef.current = 0;
+    countdownIntervalRef.current = 0;
+  }, [autoMode, cameraActive]);
+
+  const armAutoCapture = useCallback(() => {
+    if (!cameraActive || !autoMode || autoCountdown > 0 || autoArmed) return;
+
+    stableIrisFramesRef.current = 0;
+    window.clearTimeout(captureTimeoutRef.current);
+    window.clearInterval(countdownIntervalRef.current);
+    captureTimeoutRef.current = 0;
+    countdownIntervalRef.current = 0;
+
+    setAutoCountdown(AUTO_ARM_SECONDS);
+    setAutoStatus(`Hold steady. Auto starts in ${AUTO_ARM_SECONDS}...`);
+
+    let remaining = AUTO_ARM_SECONDS;
+    countdownIntervalRef.current = window.setInterval(() => {
+      remaining -= 1;
+      if (remaining <= 0) {
+        window.clearInterval(countdownIntervalRef.current);
+        countdownIntervalRef.current = 0;
+        setAutoCountdown(0);
+        setAutoArmed(true);
+        setAutoStatus('Auto armed. Fill the circle with your iris');
+        return;
+      }
+
+      setAutoCountdown(remaining);
+      setAutoStatus(`Hold steady. Auto starts in ${remaining}...`);
+    }, 1000);
+  }, [autoArmed, autoCountdown, autoMode, cameraActive]);
+
   // Auto-detect iris loop
   useEffect(() => {
-    if (!cameraActive || !autoMode) return;
+    if (!cameraActive || !autoMode || !autoArmed) return;
     let active = true;
 
     const detect = () => {
@@ -307,7 +370,7 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
       window.clearTimeout(captureTimeoutRef.current);
       captureTimeoutRef.current = 0;
     };
-  }, [cameraActive, autoMode, takePhoto]);
+  }, [autoArmed, cameraActive, autoMode, takePhoto]);
 
   return (
     <div style={{ textAlign: 'center' }}>
@@ -386,19 +449,20 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
           )}
 
           {autoMode && (
-            <div style={{
-              padding: '10px 24px',
-              borderRadius: '24px',
-              background: 'linear-gradient(135deg, rgba(106,27,255,0.3), rgba(255,106,179,0.3))',
-              border: '1px solid rgba(106,27,255,0.5)',
-              color: '#c4b5fd',
-              fontSize: '14px',
-            }}>
-              🤖 Auto-Capture ON
-            </div>
+            <button
+              onClick={armAutoCapture}
+              disabled={autoArmed || autoCountdown > 0}
+              style={{
+                ...captureBtnStyle,
+                opacity: autoArmed || autoCountdown > 0 ? 0.7 : 1,
+                cursor: autoArmed || autoCountdown > 0 ? 'default' : 'pointer',
+              }}
+            >
+              {autoArmed ? '🎯 Armed' : autoCountdown > 0 ? `⏱️ ${autoCountdown}` : '✅ Ready'}
+            </button>
           )}
 
-          <button onClick={() => setAutoMode(!autoMode)} style={smallBtnStyle}>
+          <button onClick={handleToggleAutoMode} style={smallBtnStyle}>
             {autoMode ? '🖐️ Manual' : '🤖 Auto'}
           </button>
           <button onClick={handleFlip} style={smallBtnStyle}>🔄</button>
@@ -407,7 +471,7 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
         {/* Tip */}
         <p style={{ color: '#6b7280', fontSize: '11px', marginTop: '12px', lineHeight: 1.4 }}>
           {autoMode
-            ? 'Position your eye in the circle. Good lighting helps. AI will enhance the result.'
+            ? 'Position your eye in the circle, tap Ready, then hold steady.'
             : 'Fill the circle with your iris, then tap Capture'}
         </p>
       </div>
@@ -422,7 +486,7 @@ export default function CameraCapture({ onCapture }: CameraCaptureProps) {
           </p>
           <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap' }}>
             <button onClick={openCamera} style={captureBtnStyle}>Open Camera</button>
-            <button onClick={() => setAutoMode(!autoMode)} style={smallBtnStyle}>
+            <button onClick={handleToggleAutoMode} style={smallBtnStyle}>
               {autoMode ? '🤖 Auto' : '🖐️ Manual'}
             </button>
           </div>
